@@ -482,11 +482,13 @@ func (b *Blobs) cacheBlob(info *BlobInfo) (int64, func() error, int, error) {
 		return 0, nil, resp.StatusCode, retErrs
 	}
 
+	contentType := resp.Header.Get("Content-Type")
+
 	continueFunc := func() error {
 		defer resp.Body.Close()
 
 		if b.bigCache != nil && b.bigCacheSize > 0 && resp.ContentLength > int64(b.bigCacheSize) {
-			size, err := b.bigCache.PutBlob(ctx, info.Blobs, resp.Body)
+			size, err := b.bigCache.PutBlob(ctx, info.Blobs, resp.Body, contentType)
 			if err != nil {
 				return fmt.Errorf("Put to big cache: %w", err)
 			}
@@ -503,7 +505,7 @@ func (b *Blobs) cacheBlob(info *BlobInfo) (int64, func() error, int, error) {
 			return nil
 		}
 
-		size, err := b.cache.PutBlob(ctx, info.Blobs, resp.Body)
+		size, err := b.cache.PutBlob(ctx, info.Blobs, resp.Body, contentType)
 		if err != nil {
 			return err
 		}
@@ -586,7 +588,7 @@ func (b *Blobs) serveCachedBlobDirect(rw http.ResponseWriter, r *http.Request, i
 	rw.Header().Set("Content-Type", "application/octet-stream")
 
 	rs := seeker.NewReadSeekCloser(func(start int64) (io.ReadCloser, error) {
-		data, err := b.cache.GetBlobWithOffset(ctx, info.Blobs, start)
+		data, _, err := b.cache.GetBlobWithOffset(ctx, info.Blobs, start)
 		if err != nil {
 			return nil, err
 		}

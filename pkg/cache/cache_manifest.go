@@ -12,24 +12,29 @@ import (
 	"strings"
 
 	"github.com/OpenCIDN/OpenCIDN/internal/slices"
+	"github.com/wzshiming/sss"
 )
 
 func (c *Cache) RelinkManifest(ctx context.Context, host, image, tag string, blob string) error {
 	blob = ensureDigestPrefix(blob)
 
-	_, err := c.StatBlob(ctx, blob)
+	stat, err := c.StatBlob(ctx, blob)
 	if err != nil {
 		return err
 	}
 
+	fi := stat.Sys().(sss.FileInfoExpansion)
+
+	contentType := *fi.ContentType
+
 	manifestLinkPath := manifestTagCachePath(host, image, tag)
-	err = c.PutContent(ctx, manifestLinkPath, []byte(blob))
+	err = c.PutContent(ctx, manifestLinkPath, []byte(blob), contentType)
 	if err != nil {
 		return fmt.Errorf("put manifest link path %s error: %w", manifestLinkPath, err)
 	}
 
 	manifestBlobLinkPath := manifestRevisionsCachePath(host, image, blob)
-	err = c.PutContent(ctx, manifestBlobLinkPath, []byte(blob))
+	err = c.PutContent(ctx, manifestBlobLinkPath, []byte(blob), contentType)
 	if err != nil {
 		return fmt.Errorf("put manifest revisions path %s error: %w", manifestLinkPath, err)
 	}
@@ -37,22 +42,12 @@ func (c *Cache) RelinkManifest(ctx context.Context, host, image, tag string, blo
 	return nil
 }
 
-func (c *Cache) PutManifestContent(ctx context.Context, host, image, tagOrBlob string, content []byte) (int64, string, string, error) {
-	mt := struct {
-		MediaType string          `json:"mediaType"`
-		Manifests json.RawMessage `json:"manifests"`
-	}{}
-	err := json.Unmarshal(content, &mt)
-	if err != nil {
-		return 0, "", "", fmt.Errorf("invalid content: %w: %s", err, string(content))
-	}
-
-	mediaType := mt.MediaType
-	if mediaType == "" {
-		if len(mt.Manifests) != 0 {
-			mediaType = "application/vnd.oci.image.index.v1+json"
-		} else {
-			mediaType = "application/vnd.docker.distribution.manifest.v1+json"
+func (c *Cache) PutManifestContent(ctx context.Context, host, image, tagOrBlob string, content []byte, contentType string) (int64, string, string, error) {
+	var err error
+	if contentType == "" {
+		contentType, err = getMediaType(content)
+		if err != nil {
+			return 0, "", "", fmt.Errorf("invalid content: %w: %s", err, string(content))
 		}
 	}
 
@@ -67,23 +62,23 @@ func (c *Cache) PutManifestContent(ctx context.Context, host, image, tagOrBlob s
 		}
 	} else {
 		manifestLinkPath := manifestTagCachePath(host, image, tagOrBlob)
-		err := c.PutContent(ctx, manifestLinkPath, []byte(hash))
+		err := c.PutContent(ctx, manifestLinkPath, []byte(hash), contentType)
 		if err != nil {
 			return 0, "", "", fmt.Errorf("put manifest link path %s error: %w", manifestLinkPath, err)
 		}
 	}
 
 	manifestLinkPath := manifestRevisionsCachePath(host, image, hash)
-	err = c.PutContent(ctx, manifestLinkPath, []byte(hash))
+	err = c.PutContent(ctx, manifestLinkPath, []byte(hash), contentType)
 	if err != nil {
 		return 0, "", "", fmt.Errorf("put manifest revisions path %s error: %w", manifestLinkPath, err)
 	}
 
-	n, err := c.PutBlobContent(ctx, hash, content)
+	n, err := c.PutBlobContent(ctx, hash, content, contentType)
 	if err != nil {
 		return 0, "", "", fmt.Errorf("put manifest blob path %s error: %w", hash, err)
 	}
-	return n, hash, mediaType, nil
+	return n, hash, contentType, nil
 }
 
 func (c *Cache) GetManifestContent(ctx context.Context, host, image, tagOrBlob string) ([]byte, string, string, error) {
@@ -100,26 +95,42 @@ func (c *Cache) GetManifestContent(ctx context.Context, host, image, tagOrBlob s
 		return nil, "", "", fmt.Errorf("get manifest link path %s error: %w", manifestLinkPath, err)
 	}
 	digest := string(digestContent)
-	content, err := c.GetBlobContent(ctx, digest)
+	content, info, err := c.GetBlobContent(ctx, digest)
 	if err != nil {
 		return nil, "", "", err
 	}
 
+	fi := info.Sys().(sss.FileInfoExpansion)
+
+	var contentType string
+	if fi.ContentType != nil && *fi.ContentType != "application/octet-stream" {
+		contentType = *fi.ContentType
+	} else {
+		contentType, err = getMediaType(content)
+		if err != nil {
+			cleanErr := c.DeleteBlob(ctx, digest)
+			if cleanErr != nil {
+				err = errors.Join(err, cleanErr)
+			}
+			cleanErr = c.Delete(ctx, manifestLinkPath)
+			if cleanErr != nil {
+				err = errors.Join(err, cleanErr)
+			}
+			return nil, "", "", fmt.Errorf("invalid content: %w: %s", err, string(content))
+		}
+	}
+
+	return content, digest, contentType, nil
+}
+
+func getMediaType(content []byte) (string, error) {
 	mt := struct {
 		MediaType string          `json:"mediaType"`
 		Manifests json.RawMessage `json:"manifests"`
 	}{}
-	err = json.Unmarshal(content, &mt)
+	err := json.Unmarshal(content, &mt)
 	if err != nil {
-		cleanErr := c.DeleteBlob(ctx, digest)
-		if cleanErr != nil {
-			err = errors.Join(err, cleanErr)
-		}
-		cleanErr = c.Delete(ctx, manifestLinkPath)
-		if cleanErr != nil {
-			err = errors.Join(err, cleanErr)
-		}
-		return nil, "", "", fmt.Errorf("invalid content: %w: %s", err, string(content))
+		return "", err
 	}
 
 	mediaType := mt.MediaType
@@ -130,8 +141,7 @@ func (c *Cache) GetManifestContent(ctx context.Context, host, image, tagOrBlob s
 			mediaType = "application/vnd.docker.distribution.manifest.v1+json"
 		}
 	}
-
-	return content, digest, mediaType, nil
+	return mediaType, nil
 }
 
 func (c *Cache) DigestManifest(ctx context.Context, host, image, tag string) (string, error) {
@@ -183,18 +193,22 @@ func (c *Cache) StatOrRelinkManifest(ctx context.Context, host, image, tag strin
 		return false, nil
 	}
 
+	fi := stat.Sys().(sss.FileInfoExpansion)
+
+	contentType := *fi.ContentType
+
 	blob = ensureDigestPrefix(blob)
 	if digest == blob {
 		return true, nil
 	}
 
-	err = c.PutContent(ctx, manifestLinkPath, []byte(blob))
+	err = c.PutContent(ctx, manifestLinkPath, []byte(blob), contentType)
 	if err != nil {
 		return false, fmt.Errorf("put manifest link path %s error: %w", manifestLinkPath, err)
 	}
 
 	manifestBlobLinkPath := manifestRevisionsCachePath(host, image, blob)
-	err = c.PutContent(ctx, manifestBlobLinkPath, []byte(blob))
+	err = c.PutContent(ctx, manifestBlobLinkPath, []byte(blob), contentType)
 	if err != nil {
 		return false, fmt.Errorf("put manifest revisions path %s error: %w", manifestLinkPath, err)
 	}

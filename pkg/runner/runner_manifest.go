@@ -234,6 +234,8 @@ func (r *Runner) manifest(ctx context.Context, messageID int64, host, image, tag
 		return err
 	}
 
+	contentType := resp.Header.Get("Content-Type")
+
 	_ = r.queueClient.Heartbeat(ctx, messageID, client.HeartbeatRequest{
 		Lease: r.lease,
 		Data: model.MessageAttr{
@@ -245,7 +247,7 @@ func (r *Runner) manifest(ctx context.Context, messageID int64, host, image, tag
 
 	if !deep {
 		for _, cache := range subCaches {
-			_, _, _, err := cache.PutManifestContent(ctx, host, image, tagOrBlob, body)
+			_, _, _, err := cache.PutManifestContent(ctx, host, image, tagOrBlob, body, contentType)
 			if err != nil {
 				r.logger.Error("PutManifest", "error", err)
 			}
@@ -302,7 +304,7 @@ func (r *Runner) manifest(ctx context.Context, messageID int64, host, image, tag
 			wg.Wait()
 
 			for _, cache := range subCaches {
-				_, _, _, err := cache.PutManifestContent(ctx, host, image, tagOrBlob, body)
+				_, _, _, err := cache.PutManifestContent(ctx, host, image, tagOrBlob, body, contentType)
 				if err != nil {
 					r.logger.Error("PutManifest", "error", err)
 				}
@@ -381,7 +383,7 @@ func (r *Runner) manifest(ctx context.Context, messageID int64, host, image, tag
 			wg.Wait()
 
 			for _, cache := range subCaches {
-				_, _, _, err := cache.PutManifestContent(ctx, host, image, tagOrBlob, body)
+				_, _, _, err := cache.PutManifestContent(ctx, host, image, tagOrBlob, body, contentType)
 				if err != nil {
 					r.logger.Error("PutManifest", "error", err)
 				}

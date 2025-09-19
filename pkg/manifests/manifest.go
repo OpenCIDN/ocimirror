@@ -375,7 +375,9 @@ func (c *Manifests) cacheManifest(info *PathInfo) (int, error) {
 		return resp.StatusCode, retErrs
 	}
 
-	size, digest, mediaType, err := c.cache.PutManifestContent(ctx, info.Host, info.Image, info.Manifests, body)
+	contentType := resp.Header.Get("Content-Type")
+
+	size, digest, mediaType, err := c.cache.PutManifestContent(ctx, info.Host, info.Image, info.Manifests, body, contentType)
 	if err != nil {
 		return 0, err
 	}

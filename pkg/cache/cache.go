@@ -64,7 +64,7 @@ func NewCache(opts ...Option) (*Cache, error) {
 		opt(c)
 	}
 
-	_, err := c.put(context.Background(), "opencidn.txt", bytes.NewBufferString("opencidn"), nil)
+	_, err := c.put(context.Background(), "opencidn.txt", bytes.NewBufferString("opencidn"), nil, "")
 	if err != nil {
 		return nil, err
 	}
@@ -98,20 +98,20 @@ func (c *Cache) Redirect(ctx context.Context, blobPath string, referer string) (
 	return u, nil
 }
 
-func (c *Cache) Writer(ctx context.Context, cachePath string, append bool) (sss.FileWriter, error) {
+func (c *Cache) Writer(ctx context.Context, cachePath string, append bool, contentType string) (sss.FileWriter, error) {
 	if append {
 		return c.storageDriver.WriterWithAppend(ctx, cachePath)
 	}
-	return c.storageDriver.Writer(ctx, cachePath)
+	return c.storageDriver.Writer(ctx, cachePath, sss.WithContentType(contentType))
 }
 
-func (c *Cache) BlobWriter(ctx context.Context, blob string, append bool) (sss.FileWriter, error) {
+func (c *Cache) BlobWriter(ctx context.Context, blob string, append bool, contentType string) (sss.FileWriter, error) {
 	cachePath := blobCachePath(blob)
 
 	if append {
-		return c.Writer(ctx, cachePath, true)
+		return c.Writer(ctx, cachePath, true, "")
 	}
-	fw, err := c.Writer(ctx, cachePath, false)
+	fw, err := c.Writer(ctx, cachePath, false, contentType)
 	if err != nil {
 		return nil, err
 	}
@@ -123,8 +123,8 @@ func (c *Cache) BlobWriter(ctx context.Context, blob string, append bool) (sss.F
 	}, nil
 }
 
-func (c *Cache) put(ctx context.Context, cachePath string, r io.Reader, checkFunc func(int64) error) (int64, error) {
-	fw, err := c.storageDriver.Writer(ctx, cachePath)
+func (c *Cache) put(ctx context.Context, cachePath string, r io.Reader, checkFunc func(int64) error, contentType string) (int64, error) {
+	fw, err := c.storageDriver.Writer(ctx, cachePath, sss.WithContentType(contentType))
 	if err != nil {
 		return 0, err
 	}
@@ -151,15 +151,15 @@ func (c *Cache) put(ctx context.Context, cachePath string, r io.Reader, checkFun
 	return n, nil
 }
 
-func (c *Cache) Put(ctx context.Context, cachePath string, r io.Reader) (int64, error) {
-	return c.put(ctx, cachePath, r, nil)
+func (c *Cache) Put(ctx context.Context, cachePath string, r io.Reader, contentType string) (int64, error) {
+	return c.put(ctx, cachePath, r, nil, contentType)
 }
 
-func (c *Cache) PutContent(ctx context.Context, cachePath string, content []byte) error {
-	return c.storageDriver.PutContent(ctx, cachePath, content)
+func (c *Cache) PutContent(ctx context.Context, cachePath string, content []byte, contentType string) error {
+	return c.storageDriver.PutContent(ctx, cachePath, content, sss.WithContentType(contentType))
 }
 
-func (c *Cache) PutWithHash(ctx context.Context, cachePath string, r io.Reader, cacheHash string, cacheSize int64) (int64, error) {
+func (c *Cache) PutWithHash(ctx context.Context, cachePath string, r io.Reader, cacheHash string, cacheSize int64, contentType string) (int64, error) {
 	h := sha256.New()
 	return c.put(ctx, cachePath, io.TeeReader(r, h), func(i int64) error {
 		if cacheSize > 0 && i != cacheSize {
@@ -170,19 +170,19 @@ func (c *Cache) PutWithHash(ctx context.Context, cachePath string, r io.Reader, 
 			return fmt.Errorf("expected %s hash, got %s", cacheHash, hash)
 		}
 		return nil
-	})
+	}, contentType)
 }
 
 func (c *Cache) Delete(ctx context.Context, cachePath string) error {
 	return c.storageDriver.Delete(ctx, cachePath)
 }
 
-func (c *Cache) Get(ctx context.Context, cachePath string) (io.ReadCloser, error) {
-	return c.storageDriver.Reader(ctx, cachePath)
+func (c *Cache) Get(ctx context.Context, cachePath string) (io.ReadCloser, sss.FileInfo, error) {
+	return c.storageDriver.ReaderAndInfo(ctx, cachePath)
 }
 
-func (c *Cache) GetWithOffset(ctx context.Context, cachePath string, offset int64) (io.ReadCloser, error) {
-	return c.storageDriver.ReaderWithOffset(ctx, cachePath, offset)
+func (c *Cache) GetWithOffset(ctx context.Context, cachePath string, offset int64) (io.ReadCloser, sss.FileInfo, error) {
+	return c.storageDriver.ReaderWithOffsetAndInfo(ctx, cachePath, offset)
 }
 
 func (c *Cache) GetContent(ctx context.Context, cachePath string) ([]byte, error) {
@@ -197,7 +197,6 @@ func (c *Cache) Walk(ctx context.Context, cachePath string, fun fs.WalkDirFunc) 
 	return c.storageDriver.Walk(ctx, cachePath, func(fi sss.FileInfo) error {
 		p := fi.Path()
 		fiw := fileInfoWrap{
-			name:     path.Base(p),
 			FileInfo: fi,
 		}
 
@@ -218,26 +217,13 @@ func (c *Cache) List(ctx context.Context, cachePath string) ([]string, error) {
 }
 
 type fileInfoWrap struct {
-	name string
 	sss.FileInfo
 }
 
 var _ fs.DirEntry = (*fileInfoWrap)(nil)
 
-func (f fileInfoWrap) Name() string {
-	return f.name
-}
-
-func (fileInfoWrap) Mode() fs.FileMode {
-	return 0666
-}
-
 func (fileInfoWrap) Type() fs.FileMode {
 	return 0
-}
-
-func (fileInfoWrap) Sys() any {
-	return nil
 }
 
 func (f fileInfoWrap) Info() (fs.FileInfo, error) {

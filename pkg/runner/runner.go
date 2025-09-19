@@ -18,8 +18,6 @@ import (
 )
 
 type Runner struct {
-	resumeSize int
-
 	bigCacheSize  int
 	bigCache      *cache.Cache
 	manifestCache *cache.Cache
@@ -89,12 +87,6 @@ func WithBigCache(cache *cache.Cache, size int) Option {
 func WithManifestCache(cache *cache.Cache) Option {
 	return func(c *Runner) {
 		c.manifestCache = cache
-	}
-}
-
-func WithResumeSize(resumeSize int) Option {
-	return func(c *Runner) {
-		c.resumeSize = resumeSize
 	}
 }
 

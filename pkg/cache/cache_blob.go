@@ -18,22 +18,22 @@ func (c *Cache) StatBlob(ctx context.Context, blob string) (sss.FileInfo, error)
 	return c.Stat(ctx, blobCachePath(blob))
 }
 
-func (c *Cache) PutBlob(ctx context.Context, blob string, r io.Reader) (int64, error) {
+func (c *Cache) PutBlob(ctx context.Context, blob string, r io.Reader, contentType string) (int64, error) {
 	cachePath := blobCachePath(blob)
-	return c.PutWithHash(ctx, cachePath, r, cleanDigest(blob), 0)
+	return c.PutWithHash(ctx, cachePath, r, cleanDigest(blob), 0, contentType)
 }
 
-func (c *Cache) PutBlobContent(ctx context.Context, blob string, content []byte) (int64, error) {
+func (c *Cache) PutBlobContent(ctx context.Context, blob string, content []byte, contentType string) (int64, error) {
 	cachePath := blobCachePath(blob)
-	return c.PutWithHash(ctx, cachePath, bytes.NewBuffer(content), cleanDigest(blob), int64(len(content)))
+	return c.PutWithHash(ctx, cachePath, bytes.NewBuffer(content), cleanDigest(blob), int64(len(content)), contentType)
 }
 
-func (c *Cache) GetBlob(ctx context.Context, blob string) (io.ReadCloser, error) {
+func (c *Cache) GetBlob(ctx context.Context, blob string) (io.ReadCloser, sss.FileInfo, error) {
 	cachePath := blobCachePath(blob)
 	return c.Get(ctx, cachePath)
 }
 
-func (c *Cache) GetBlobWithOffset(ctx context.Context, blob string, offset int64) (io.ReadCloser, error) {
+func (c *Cache) GetBlobWithOffset(ctx context.Context, blob string, offset int64) (io.ReadCloser, sss.FileInfo, error) {
 	cachePath := blobCachePath(blob)
 	return c.GetWithOffset(ctx, cachePath, offset)
 }
@@ -43,13 +43,17 @@ func (c *Cache) DeleteBlob(ctx context.Context, blob string) error {
 	return c.Delete(ctx, cachePath)
 }
 
-func (c *Cache) GetBlobContent(ctx context.Context, blob string) ([]byte, error) {
-	r, err := c.GetBlob(ctx, blob)
+func (c *Cache) GetBlobContent(ctx context.Context, blob string) ([]byte, sss.FileInfo, error) {
+	r, info, err := c.GetBlob(ctx, blob)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer r.Close()
-	return io.ReadAll(r)
+	body, err := io.ReadAll(r)
+	if err != nil {
+		return nil, nil, err
+	}
+	return body, info, nil
 }
 
 func cleanDigest(blob string) string {

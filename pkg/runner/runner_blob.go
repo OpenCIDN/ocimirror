@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"net/url"
 	"sort"
@@ -16,8 +15,6 @@ import (
 	"github.com/OpenCIDN/OpenCIDN/pkg/cache"
 	"github.com/OpenCIDN/OpenCIDN/pkg/queue/client"
 	"github.com/OpenCIDN/OpenCIDN/pkg/queue/model"
-	"github.com/wzshiming/httpseek"
-	"github.com/wzshiming/sss"
 )
 
 func (r *Runner) runBlobSync(ctx context.Context) {
@@ -97,31 +94,30 @@ func (r *Runner) runOnceBlobSync(ctx context.Context) error {
 	return r.blobSync(ctx, resp)
 }
 
-func (r *Runner) blob(ctx context.Context, host, name, blob string, size int64, gotSize, progress *atomic.Int64) error {
+func (r *Runner) blob(ctx context.Context, host, name, blob string, _ int64, gotSize, progress *atomic.Int64) error {
 	u := &url.URL{
 		Scheme: "https",
 		Host:   host,
 		Path:   fmt.Sprintf("/v2/%s/blobs/%s", name, blob),
 	}
 
-	if size == 0 {
-		req, err := http.NewRequestWithContext(ctx, http.MethodHead, u.String(), nil)
-		if err != nil {
-			return err
-		}
-		resp, err := r.httpClient.Do(req)
-		if err != nil {
-			return err
-		}
-		if resp.Body != nil {
-			_ = resp.Body.Close()
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("failed to head blob: status code %d", resp.StatusCode)
-		}
-		size = resp.ContentLength
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, u.String(), nil)
+	if err != nil {
+		return err
 	}
+	resp, err := r.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	if resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to head blob: status code %d", resp.StatusCode)
+	}
+	size := resp.ContentLength
+	contentType := resp.Header.Get("Content-Type")
 
 	if size > 0 {
 		gotSize.Store(size)
@@ -152,112 +148,12 @@ func (r *Runner) blob(ctx context.Context, host, name, blob string, size int64, 
 		r.logger.Info("skip blob by cache", "digest", blob)
 		return nil
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	req, err = http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return err
 	}
 
-	if r.resumeSize != 0 && size > int64(r.resumeSize) {
-		var offset int64 = math.MaxInt
-
-		rbws := []sss.FileWriter{}
-		for _, cache := range subCaches {
-			f, err := cache.BlobWriter(ctx, blob, true)
-			if err == nil {
-				if offset != 0 {
-					offset = min(offset, f.Size())
-				}
-				rbws = append(rbws, f)
-
-			} else {
-				offset = 0
-				f, err = cache.BlobWriter(ctx, blob, false)
-				if err != nil {
-					return err
-				}
-				rbws = append(rbws, f)
-			}
-		}
-
-		if offset > size {
-			return fmt.Errorf("offset %d exceeds expected size %d", offset, size)
-		}
-		progress.Store(offset)
-
-		if offset != size {
-			var writers []io.Writer
-			for _, w := range rbws {
-				n := w.Size() - offset
-				if n == 0 {
-					writers = append(writers, w)
-				} else if n > 0 {
-					writers = append(writers, &skipWriter{
-						writer: w,
-						offset: uint64(n),
-					})
-				} else {
-					panic("runner: resume write blob error")
-				}
-			}
-
-			seeker := httpseek.NewSeekerWithHTTPClient(ctx, r.httpClient, req)
-			defer seeker.Close()
-
-			reader := httpseek.NewMustReadSeeker(seeker, 0, func(retry int, err error) error {
-				if retry > 2 {
-					return err
-				}
-				r.logger.Warn("blob reader", "retry", retry, "digest", blob, "error", err)
-				return nil
-			})
-			_, err := reader.Seek(offset, io.SeekStart)
-			if err != nil {
-				return err
-			}
-
-			body := &readerCounter{
-				r:       reader,
-				counter: progress,
-			}
-
-			n, err := io.Copy(io.MultiWriter(writers...), body)
-			if err != nil {
-				return fmt.Errorf("copy blob failed: %w", err)
-			}
-
-			if offset+n != size {
-				return fmt.Errorf("copy blob failed: expected size %d, got offset %d, append %d", size, offset, n)
-			}
-		}
-
-		var errs []error
-		for _, c := range rbws {
-			err := c.Commit(ctx)
-			if err != nil {
-				errs = append(errs, err)
-			}
-		}
-
-		for _, cache := range subCaches {
-			fi, err := cache.StatBlob(ctx, blob)
-			if err != nil {
-				errs = append(errs, err)
-				continue
-			}
-
-			if fi.Size() != size {
-				if err := cache.DeleteBlob(ctx, blob); err != nil {
-					errs = append(errs, fmt.Errorf("%s is %d, but expected %d: %w", blob, fi.Size(), size, err))
-				} else {
-					errs = append(errs, fmt.Errorf("%s is %d, but expected %d", blob, fi.Size(), size))
-				}
-			}
-		}
-
-		return errors.Join(errs...)
-	}
-
-	resp, err := r.httpClient.Do(req)
+	resp, err = r.httpClient.Do(req)
 	if err != nil {
 		return err
 	}
@@ -281,7 +177,7 @@ func (r *Runner) blob(ctx context.Context, host, name, blob string, size int64, 
 	}
 
 	if len(subCaches) == 1 {
-		n, err := subCaches[0].PutBlob(ctx, blob, body)
+		n, err := subCaches[0].PutBlob(ctx, blob, body, contentType)
 		if err != nil {
 			return fmt.Errorf("put blob failed: %w", err)
 		}
@@ -301,7 +197,7 @@ func (r *Runner) blob(ctx context.Context, host, name, blob string, size int64, 
 		wg.Add(1)
 		go func(cache *cache.Cache, pr io.Reader) {
 			defer wg.Done()
-			_, err := cache.PutBlob(ctx, blob, pr)
+			_, err := cache.PutBlob(ctx, blob, pr, contentType)
 			if err != nil {
 				r.logger.Error("put blob failed", "digest", blob, "error", err)
 				io.Copy(io.Discard, pr)
