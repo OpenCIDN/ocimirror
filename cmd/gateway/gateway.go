@@ -20,7 +20,6 @@ import (
 	"github.com/OpenCIDN/OpenCIDN/pkg/cache"
 	"github.com/OpenCIDN/OpenCIDN/pkg/gateway"
 	"github.com/OpenCIDN/OpenCIDN/pkg/manifests"
-	"github.com/OpenCIDN/OpenCIDN/pkg/queue/client"
 	"github.com/OpenCIDN/OpenCIDN/pkg/signing"
 	"github.com/OpenCIDN/OpenCIDN/pkg/token"
 	"github.com/OpenCIDN/OpenCIDN/pkg/transport"
@@ -79,9 +78,6 @@ type flagpole struct {
 	RegistryAlias map[string]string
 
 	Concurrency int
-
-	QueueURL   string
-	QueueToken string
 }
 
 func NewCommand() *cobra.Command {
@@ -139,9 +135,6 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringToStringVar(&flags.RegistryAlias, "registry-alias", flags.RegistryAlias, "registry alias")
 
 	cmd.Flags().IntVar(&flags.Concurrency, "concurrency", flags.Concurrency, "Concurrency to source")
-
-	cmd.Flags().StringVar(&flags.QueueToken, "queue-token", flags.QueueToken, "Queue token")
-	cmd.Flags().StringVar(&flags.QueueURL, "queue-url", flags.QueueURL, "Queue URL")
 
 	return cmd
 }
@@ -307,16 +300,6 @@ func runE(ctx context.Context, flags *flagpole) error {
 				return fmt.Errorf("create cache failed: %w", err)
 			}
 			blobsOpts = append(blobsOpts, blobs.WithBigCache(bigsdcache, flags.BigStorageSize))
-		}
-
-		if flags.QueueURL != "" {
-			queueClient := client.NewMessageClient(http.DefaultClient, flags.QueueURL, flags.QueueToken)
-			manifestsOpts = append(manifestsOpts,
-				manifests.WithQueueClient(queueClient),
-			)
-			blobsOpts = append(blobsOpts,
-				blobs.WithQueueClient(queueClient),
-			)
 		}
 
 		manifestsOpts = append(manifestsOpts, manifests.WithClient(httpClient))

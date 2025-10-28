@@ -16,8 +16,6 @@ import (
 	"github.com/OpenCIDN/OpenCIDN/internal/queue"
 	"github.com/OpenCIDN/OpenCIDN/internal/utils"
 	"github.com/OpenCIDN/OpenCIDN/pkg/cache"
-	"github.com/OpenCIDN/OpenCIDN/pkg/queue/client"
-	"github.com/OpenCIDN/OpenCIDN/pkg/queue/model"
 	"github.com/OpenCIDN/OpenCIDN/pkg/token"
 	"github.com/docker/distribution/registry/api/errcode"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
@@ -37,8 +35,6 @@ type Manifests struct {
 	acceptsItems []string
 	acceptsStr   string
 	accepts      map[string]struct{}
-
-	queueClient *client.MessageClient
 }
 
 type Option func(c *Manifests)
@@ -76,12 +72,6 @@ func WithConcurrency(concurrency int) Option {
 			concurrency = 1
 		}
 		c.concurrency = concurrency
-	}
-}
-
-func WithQueueClient(queueClient *client.MessageClient) Option {
-	return func(c *Manifests) {
-		c.queueClient = queueClient
 	}
 }
 
@@ -154,65 +144,16 @@ func (c *Manifests) Serve(rw http.ResponseWriter, r *http.Request, info *PathInf
 
 	ok, _ := c.cache.StatManifest(r.Context(), info.Host, info.Image, info.Manifests)
 	if ok {
-		if c.queueClient != nil {
-			_, err := c.queueClient.Create(context.Background(), formatPathInfo(info), 0, model.MessageAttr{
-				Kind:  model.KindManifest,
-				Host:  info.Host,
-				Image: info.Image,
-				Deep:  true,
-			})
-			if err != nil {
-				c.logger.Warn("failed to create queue message", "error", err)
-				utils.ServeError(rw, r, errcode.ErrorCodeUnknown, 0)
-				return
-			}
-		} else {
-			c.queue.AddWeight(*info, 0)
-		}
+		c.queue.AddWeight(*info, 0)
 		if c.serveCachedManifest(rw, r, info, true, "cached") {
 			return
 		}
 	} else {
-		if c.queueClient != nil {
-			err := c.waitingQueue(ctx, formatPathInfo(info), t.Weight, info)
-			if err != nil {
-				errStr := err.Error()
-				if strings.Contains(errStr, "status code 404") {
-					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
-					return
-				} else if strings.Contains(errStr, "status code 403") {
-					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
-					return
-				} else if strings.Contains(errStr, "status code 401") {
-					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
-					return
-				} else if strings.Contains(errStr, "status code 412") {
-					// For gcr.io
-					// unexpected status code 412 Precondition Failed: Container Registry is deprecated and shutting down, please use the auto migration tool to migrate to Artifact Registry (gcloud artifacts docker upgrade migrate --projects='arrikto'). For more details see: https://cloud.google.com/artifact-registry/docs/transition/auto-migrate-gcr-ar"
-					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
-					return
-				} else if strings.Contains(errStr, "unsupported target response") {
-					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
-					return
-				} else if strings.Contains(errStr, "DENIED") {
-					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
-					return
-				}
-				c.logger.Warn("failed to wait queue message", "error", err)
-				utils.ServeError(rw, r, errcode.ErrorCodeUnknown, 0)
-				return
-			} else {
-				if c.serveCachedManifest(rw, r, info, true, "cache") {
-					return
-				}
-			}
-		} else {
-			select {
-			case <-ctx.Done():
-				utils.ServeError(rw, r, ctx.Err(), 0)
-				return
-			case <-c.queue.AddWeight(*info, t.Weight):
-			}
+		select {
+		case <-ctx.Done():
+			utils.ServeError(rw, r, ctx.Err(), 0)
+			return
+		case <-c.queue.AddWeight(*info, t.Weight):
 		}
 	}
 	if c.missServeCachedManifest(rw, r, info) {
@@ -221,59 +162,6 @@ func (c *Manifests) Serve(rw http.ResponseWriter, r *http.Request, info *PathInf
 
 	c.logger.Error("here should never be executed", "info", info)
 	utils.ServeError(rw, r, errcode.ErrorCodeUnknown, 0)
-}
-
-func (c *Manifests) waitingQueue(ctx context.Context, msg string, weight int, info *PathInfo) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	mr, err := c.queueClient.Create(ctx, msg, weight+1, model.MessageAttr{
-		Kind:  model.KindManifest,
-		Host:  info.Host,
-		Image: info.Image,
-		Deep:  false,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create queue: %w", err)
-	}
-
-	if mr.Status == model.StatusPending || mr.Status == model.StatusProcessing {
-		c.logger.Info("watching message from queue", "msg", msg)
-
-		chMr, err := c.queueClient.Watch(ctx, mr.MessageID)
-		if err != nil {
-			return fmt.Errorf("failed to watch message: %w", err)
-		}
-	watiQueue:
-		for {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case m, ok := <-chMr:
-				if !ok {
-					time.Sleep(1 * time.Second)
-					chMr, err = c.queueClient.Watch(ctx, mr.MessageID)
-					if err != nil {
-						return fmt.Errorf("failed to re-watch message: %w", err)
-					}
-				} else {
-					mr = m
-					if mr.Status != model.StatusPending && mr.Status != model.StatusProcessing {
-						break watiQueue
-					}
-				}
-			}
-		}
-	}
-
-	switch mr.Status {
-	case model.StatusCompleted:
-		return nil
-	case model.StatusFailed:
-		return fmt.Errorf("%q Queue Error: %s", msg, mr.Data.Error)
-	default:
-		return fmt.Errorf("unexpected status %d for message %q", mr.Status, msg)
-	}
 }
 
 func (c *Manifests) cacheManifest(info *PathInfo) (int, error) {
