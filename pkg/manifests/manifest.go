@@ -22,8 +22,6 @@ import (
 )
 
 type Manifests struct {
-	concurrency int
-
 	httpClient *http.Client
 	logger     *slog.Logger
 	cache      *cache.Cache
@@ -67,15 +65,6 @@ func WithCache(cache *cache.Cache) Option {
 	}
 }
 
-func WithConcurrency(concurrency int) Option {
-	return func(c *Manifests) {
-		if concurrency < 1 {
-			concurrency = 1
-		}
-		c.concurrency = concurrency
-	}
-}
-
 func WithCIDNClient(cidnClient *cidn.Client) Option {
 	return func(c *Manifests) {
 		c.cidnClient = cidnClient
@@ -94,7 +83,6 @@ func NewManifests(opts ...Option) (*Manifests, error) {
 		},
 		accepts:               map[string]struct{}{},
 		manifestCacheDuration: time.Minute,
-		concurrency:           10,
 	}
 
 	for _, item := range c.acceptsItems {

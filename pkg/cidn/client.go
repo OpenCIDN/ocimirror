@@ -5,6 +5,8 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
+	"path"
+	"strings"
 	"time"
 
 	"github.com/OpenCIDN/cidn/pkg/apis/task/v1alpha1"
@@ -168,4 +170,29 @@ func (c *Client) waitForBlobCompletion(ctx context.Context, name string) error {
 func getBlobName(urlPath string) string {
 	m := md5.Sum([]byte(urlPath))
 	return hex.EncodeToString(m[:])
+}
+
+// blobCachePath returns the cache path for a blob digest following the Docker registry v2 layout
+func blobCachePath(blob string) string {
+	blob = cleanDigest(blob)
+	return path.Join("/docker/registry/v2/blobs/sha256", blob[:2], blob, "data")
+}
+
+// manifestRevisionsCachePath returns the cache path for a manifest revision
+func manifestRevisionsCachePath(host, image, blob string) string {
+	blob = cleanDigest(blob)
+	return path.Join("/docker/registry/v2/repositories", host, image, "_manifests/revisions/sha256", blob, "link")
+}
+
+// manifestTagCachePath returns the cache path for a manifest tag
+func manifestTagCachePath(host, image, tag string) string {
+	return path.Join("/docker/registry/v2/repositories", host, image, "_manifests/tags", tag, "current/link")
+}
+
+// cleanDigest removes the "sha256:" prefix if present
+func cleanDigest(blob string) string {
+	if strings.HasPrefix(blob, "sha256:") {
+		return blob[7:]
+	}
+	return blob
 }

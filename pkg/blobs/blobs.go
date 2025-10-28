@@ -36,8 +36,6 @@ type BlobInfo struct {
 }
 
 type Blobs struct {
-	concurrency int
-
 	httpClient *http.Client
 	logger     *slog.Logger
 	cache      *cache.Cache
@@ -129,16 +127,6 @@ func WithBlobCacheDuration(blobCacheDuration time.Duration) Option {
 	}
 }
 
-func WithConcurrency(concurrency int) Option {
-	return func(c *Blobs) error {
-		if concurrency < 1 {
-			concurrency = 1
-		}
-		c.concurrency = concurrency
-		return nil
-	}
-}
-
 func WithCIDNClient(cidnClient *cidn.Client) Option {
 	return func(c *Blobs) error {
 		c.cidnClient = cidnClient
@@ -151,7 +139,6 @@ func NewBlobs(opts ...Option) (*Blobs, error) {
 		logger:            slog.Default(),
 		httpClient:        http.DefaultClient,
 		blobCacheDuration: time.Hour,
-		concurrency:       10,
 	}
 
 	for _, opt := range opts {
