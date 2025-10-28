@@ -3,7 +3,7 @@ module github.com/OpenCIDN/OpenCIDN
 go 1.24
 
 require (
-	github.com/aws/aws-sdk-go v1.55.7
+	github.com/aws/aws-sdk-go v1.55.8
 	github.com/docker/distribution v2.8.3+incompatible
 	github.com/emicklei/go-restful-openapi/v2 v2.11.0
 	github.com/emicklei/go-restful/v3 v3.12.1
@@ -16,7 +16,7 @@ require (
 	github.com/wzshiming/hostmatcher v0.0.3
 	github.com/wzshiming/httpseek v0.5.0
 	github.com/wzshiming/imc v0.0.0-20250106051804-1cb884b5184a
-	github.com/wzshiming/sss v0.2.1
+	github.com/wzshiming/sss v0.4.0
 	golang.org/x/crypto v0.36.0
 	golang.org/x/time v0.10.0
 )
