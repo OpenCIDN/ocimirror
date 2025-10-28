@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/OpenCIDN/OpenCIDN/internal/queue"
 	"github.com/OpenCIDN/OpenCIDN/internal/seeker"
 	"github.com/OpenCIDN/OpenCIDN/internal/throttled"
 	"github.com/OpenCIDN/OpenCIDN/internal/utils"
@@ -36,17 +35,8 @@ type BlobInfo struct {
 	Blobs string
 }
 
-type downloadBlob struct {
-	ContinueFunc func() error
-	Finish       func()
-	Info         BlobInfo
-}
-
 type Blobs struct {
 	concurrency int
-	queue       *queue.WeightQueue[BlobInfo]
-
-	groupQueue []*queue.WeightQueue[*downloadBlob]
 
 	httpClient *http.Client
 	logger     *slog.Logger
@@ -161,8 +151,6 @@ func NewBlobs(opts ...Option) (*Blobs, error) {
 		logger:            slog.Default(),
 		httpClient:        http.DefaultClient,
 		blobCacheDuration: time.Hour,
-		queue:             queue.NewWeightQueue[BlobInfo](),
-		groupQueue:        make([]*queue.WeightQueue[*downloadBlob], 4),
 		concurrency:       10,
 	}
 
@@ -174,28 +162,6 @@ func NewBlobs(opts ...Option) (*Blobs, error) {
 
 	c.blobCache = newBlobsCache(c.blobCacheDuration)
 	c.blobCache.Start(ctx, c.logger)
-
-	for i := 0; i <= c.concurrency; i++ {
-		go c.worker(ctx)
-	}
-
-	for i := range c.groupQueue {
-		q := queue.NewWeightQueue[*downloadBlob]()
-		c.groupQueue[i] = q
-		go c.downloadBlobWorker(ctx, q)
-	}
-
-	for i := 0; i <= c.concurrency*8/10; i++ {
-		q := queue.NewWeightQueue[*downloadBlob]()
-		c.groupQueue[0] = q
-		go c.downloadBlobWorker(ctx, q)
-	}
-
-	for i := 0; i <= c.concurrency*1/10; i++ {
-		q := queue.NewWeightQueue[*downloadBlob]()
-		c.groupQueue[1] = q
-		go c.downloadBlobWorker(ctx, q)
-	}
 
 	return c, nil
 }
@@ -218,52 +184,6 @@ func parsePath(path string) (string, string, string, bool) {
 		return "", "", "", false
 	}
 	return source, image, digest, true
-}
-
-func (b *Blobs) worker(ctx context.Context) {
-	for {
-		info, weight, finish, ok := b.queue.GetOrWaitWithDone(ctx.Done())
-		if !ok {
-			return
-		}
-
-		size, continueFunc, sc, err := b.cacheBlob(&info)
-		if err != nil {
-			b.logger.Warn("failed download file request", "info", info, "error", err)
-			b.blobCache.PutError(info.Blobs, err, sc)
-			finish()
-			continue
-		}
-
-		group, ew := sizeToGroupAndWeight(size)
-		if group >= uint(len(b.groupQueue)) {
-			group = uint(len(b.groupQueue)) - 1
-		}
-
-		b.groupQueue[group].AddWeight(&downloadBlob{
-			ContinueFunc: continueFunc,
-			Finish:       finish,
-			Info:         info,
-		}, weight+ew)
-	}
-}
-
-func (b *Blobs) downloadBlobWorker(ctx context.Context, queue *queue.WeightQueue[*downloadBlob]) {
-	for {
-		bb, _, finish, ok := queue.GetOrWaitWithDone(ctx.Done())
-		if !ok {
-			return
-		}
-		err := bb.ContinueFunc()
-		if err != nil {
-			b.logger.Warn("failed download file", "info", bb.Info, "error", err)
-			b.blobCache.PutError(bb.Info.Blobs, err, 0)
-		} else {
-			b.logger.Info("finish download file", "info", bb.Info)
-		}
-		finish()
-		bb.Finish()
-	}
 }
 
 func (b *Blobs) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
@@ -400,12 +320,6 @@ func (b *Blobs) Serve(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t
 			b.logger.Warn("failed to sync blob with CIDN", "error", err)
 			utils.ServeError(rw, r, errcode.ErrorCodeUnknown, 0)
 			return
-		}
-	} else {
-		select {
-		case <-ctx.Done():
-			return
-		case <-b.queue.AddWeight(*info, t.Weight):
 		}
 	}
 

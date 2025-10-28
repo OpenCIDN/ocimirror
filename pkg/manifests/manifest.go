@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/OpenCIDN/OpenCIDN/internal/queue"
 	"github.com/OpenCIDN/OpenCIDN/internal/utils"
 	"github.com/OpenCIDN/OpenCIDN/pkg/cache"
 	"github.com/OpenCIDN/OpenCIDN/pkg/cidn"
@@ -24,7 +23,6 @@ import (
 
 type Manifests struct {
 	concurrency int
-	queue       *queue.WeightQueue[PathInfo]
 
 	httpClient *http.Client
 	logger     *slog.Logger
@@ -96,7 +94,6 @@ func NewManifests(opts ...Option) (*Manifests, error) {
 		},
 		accepts:               map[string]struct{}{},
 		manifestCacheDuration: time.Minute,
-		queue:                 queue.NewWeightQueue[PathInfo](),
 		concurrency:           10,
 	}
 
@@ -113,26 +110,7 @@ func NewManifests(opts ...Option) (*Manifests, error) {
 	c.manifestCache = newManifestCache(c.manifestCacheDuration)
 	c.manifestCache.Start(ctx, c.logger)
 
-	for i := 0; i <= c.concurrency; i++ {
-		go c.worker(ctx)
-	}
-
 	return c, nil
-}
-
-func (c *Manifests) worker(ctx context.Context) {
-	for {
-		info, _, finish, ok := c.queue.GetOrWaitWithDone(ctx.Done())
-		if !ok {
-			return
-		}
-
-		sc, err := c.cacheManifest(&info)
-		if err != nil {
-			c.manifestCache.PutError(&info, err, sc)
-		}
-		finish()
-	}
 }
 
 func formatPathInfo(info *PathInfo) string {
@@ -153,26 +131,21 @@ func (c *Manifests) Serve(rw http.ResponseWriter, r *http.Request, info *PathInf
 
 	ok, _ := c.cache.StatManifest(r.Context(), info.Host, info.Image, info.Manifests)
 	if ok {
-		if c.cidnClient != nil {
-			// Trigger async background sync using CIDN
-			go func() {
-				sourceURL := fmt.Sprintf("https://%s/v2/%s/manifests/%s", info.Host, info.Image, info.Manifests)
-				cachePath := formatPathInfo(info)
-				err := c.cidnClient.SyncBlob(context.Background(), sourceURL, cachePath)
-				if err != nil {
-					c.logger.Warn("failed to sync manifest with CIDN", "path", cachePath, "error", err)
-				}
-			}()
-		} else {
-			c.queue.AddWeight(*info, 0)
-		}
+		// Trigger async background sync using CIDN
+		go func() {
+			sourceURL := fmt.Sprintf("https://%s/v2/%s/manifests/%s", info.Host, info.Image, info.Manifests)
+			cachePath := formatPathInfo(info)
+			err := c.cidnClient.SyncBlob(context.Background(), sourceURL, cachePath)
+			if err != nil {
+				c.logger.Warn("failed to sync manifest with CIDN", "path", cachePath, "error", err)
+			}
+		}()
 		if c.serveCachedManifest(rw, r, info, true, "cached") {
 			return
 		}
 	} else {
-		if c.cidnClient != nil {
-			err := c.waitingCIDN(ctx, info)
-			if err != nil {
+		err := c.waitingCIDN(ctx, info)
+		if err != nil {
 				errStr := err.Error()
 				if strings.Contains(errStr, "status code 404") {
 					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
@@ -203,14 +176,6 @@ func (c *Manifests) Serve(rw http.ResponseWriter, r *http.Request, info *PathInf
 					return
 				}
 			}
-		} else {
-			select {
-			case <-ctx.Done():
-				utils.ServeError(rw, r, ctx.Err(), 0)
-				return
-			case <-c.queue.AddWeight(*info, t.Weight):
-			}
-		}
 	}
 	if c.missServeCachedManifest(rw, r, info) {
 		return

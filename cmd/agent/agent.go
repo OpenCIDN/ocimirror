@@ -67,8 +67,9 @@ type flagpole struct {
 
 	Concurrency int
 
-	CIDNKubeconfig  string
-	CIDNDestination string
+	Kubeconfig             string
+	Master                 string
+	InsecureSkipTLSVerify bool
 }
 
 func NewCommand() *cobra.Command {
@@ -116,8 +117,9 @@ func NewCommand() *cobra.Command {
 
 	cmd.Flags().IntVar(&flags.Concurrency, "concurrency", flags.Concurrency, "Concurrency to source")
 
-	cmd.Flags().StringVar(&flags.CIDNKubeconfig, "cidn-kubeconfig", flags.CIDNKubeconfig, "CIDN Kubeconfig file path")
-	cmd.Flags().StringVar(&flags.CIDNDestination, "cidn-destination", flags.CIDNDestination, "CIDN destination name")
+	cmd.Flags().StringVar(&flags.Kubeconfig, "kubeconfig", flags.Kubeconfig, "Path to the kubeconfig file to use")
+	cmd.Flags().StringVar(&flags.Master, "master", flags.Master, "The address of the Kubernetes API server")
+	cmd.Flags().BoolVar(&flags.InsecureSkipTLSVerify, "insecure-skip-tls-verify", flags.InsecureSkipTLSVerify, "If true, the server's certificate will not be checked for validity. This will make your HTTPS connections insecure")
 
 	return cmd
 }
@@ -185,11 +187,23 @@ func runE(ctx context.Context, flags *flagpole) error {
 		blobsOpts = append(blobsOpts, blobs.WithBigCache(bigsdcache, flags.BigStorageSize))
 	}
 
-	if flags.CIDNKubeconfig != "" && flags.CIDNDestination != "" {
+	if flags.Kubeconfig != "" {
+		// Extract destination from storage URL scheme
+		storageURL, err := url.Parse(flags.StorageURL)
+		if err != nil {
+			return fmt.Errorf("failed to parse storage URL: %w", err)
+		}
+		destination := storageURL.Scheme
+		
 		// Create CIDN client
-		config, err := clientcmd.BuildConfigFromFlags("", flags.CIDNKubeconfig)
+		config, err := clientcmd.BuildConfigFromFlags(flags.Master, flags.Kubeconfig)
 		if err != nil {
 			return fmt.Errorf("failed to build kubeconfig: %w", err)
+		}
+		
+		if flags.InsecureSkipTLSVerify {
+			config.Insecure = true
+			config.TLSClientConfig.Insecure = true
 		}
 
 		cidnClient, err := cidnversioned.NewForConfig(config)
@@ -211,7 +225,7 @@ func runE(ctx context.Context, flags *flagpole) error {
 			}
 		}
 
-		cidnClientWrapper := cidn.NewClient(cidnClient, blobInformer, flags.CIDNDestination)
+		cidnClientWrapper := cidn.NewClient(cidnClient, blobInformer, destination)
 		blobsOpts = append(blobsOpts, blobs.WithCIDNClient(cidnClientWrapper))
 	}
 
