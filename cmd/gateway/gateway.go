@@ -12,15 +12,17 @@ import (
 	"strings"
 	"time"
 
+	cidnversioned "github.com/OpenCIDN/cidn/pkg/clientset/versioned"
+	cidninformers "github.com/OpenCIDN/cidn/pkg/informers/externalversions"
 	"github.com/OpenCIDN/OpenCIDN/internal/pki"
 	"github.com/OpenCIDN/OpenCIDN/internal/server"
 	"github.com/OpenCIDN/OpenCIDN/internal/signals"
 	"github.com/OpenCIDN/OpenCIDN/internal/utils"
 	"github.com/OpenCIDN/OpenCIDN/pkg/blobs"
 	"github.com/OpenCIDN/OpenCIDN/pkg/cache"
+	"github.com/OpenCIDN/OpenCIDN/pkg/cidn"
 	"github.com/OpenCIDN/OpenCIDN/pkg/gateway"
 	"github.com/OpenCIDN/OpenCIDN/pkg/manifests"
-	"github.com/OpenCIDN/OpenCIDN/pkg/queue/client"
 	"github.com/OpenCIDN/OpenCIDN/pkg/signing"
 	"github.com/OpenCIDN/OpenCIDN/pkg/token"
 	"github.com/OpenCIDN/OpenCIDN/pkg/transport"
@@ -28,6 +30,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wzshiming/httpseek"
 	"github.com/wzshiming/sss"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 func main() {
@@ -80,8 +83,8 @@ type flagpole struct {
 
 	Concurrency int
 
-	QueueURL   string
-	QueueToken string
+	CIDNKubeconfig  string
+	CIDNDestination string
 }
 
 func NewCommand() *cobra.Command {
@@ -140,8 +143,8 @@ func NewCommand() *cobra.Command {
 
 	cmd.Flags().IntVar(&flags.Concurrency, "concurrency", flags.Concurrency, "Concurrency to source")
 
-	cmd.Flags().StringVar(&flags.QueueToken, "queue-token", flags.QueueToken, "Queue token")
-	cmd.Flags().StringVar(&flags.QueueURL, "queue-url", flags.QueueURL, "Queue URL")
+	cmd.Flags().StringVar(&flags.CIDNKubeconfig, "cidn-kubeconfig", flags.CIDNKubeconfig, "CIDN Kubeconfig file path")
+	cmd.Flags().StringVar(&flags.CIDNDestination, "cidn-destination", flags.CIDNDestination, "CIDN destination name")
 
 	return cmd
 }
@@ -309,13 +312,38 @@ func runE(ctx context.Context, flags *flagpole) error {
 			blobsOpts = append(blobsOpts, blobs.WithBigCache(bigsdcache, flags.BigStorageSize))
 		}
 
-		if flags.QueueURL != "" {
-			queueClient := client.NewMessageClient(http.DefaultClient, flags.QueueURL, flags.QueueToken)
+		if flags.CIDNKubeconfig != "" && flags.CIDNDestination != "" {
+			// Create CIDN client
+			config, err := clientcmd.BuildConfigFromFlags("", flags.CIDNKubeconfig)
+			if err != nil {
+				return fmt.Errorf("failed to build kubeconfig: %w", err)
+			}
+
+			cidnClient, err := cidnversioned.NewForConfig(config)
+			if err != nil {
+				return fmt.Errorf("failed to create CIDN client: %w", err)
+			}
+
+			cidnInformerFactory := cidninformers.NewSharedInformerFactory(cidnClient, 0)
+			blobInformer := cidnInformerFactory.Task().V1alpha1().Blobs()
+
+			// Start the informer
+			go cidnInformerFactory.Start(ctx.Done())
+
+			// Wait for cache sync
+			synced := cidnInformerFactory.WaitForCacheSync(ctx.Done())
+			for key, ok := range synced {
+				if !ok {
+					return fmt.Errorf("failed to sync CIDN informer cache for %v", key)
+				}
+			}
+
+			cidnClientWrapper := cidn.NewClient(cidnClient, blobInformer, flags.CIDNDestination)
 			manifestsOpts = append(manifestsOpts,
-				manifests.WithQueueClient(queueClient),
+				manifests.WithCIDNClient(cidnClientWrapper),
 			)
 			blobsOpts = append(blobsOpts,
-				blobs.WithQueueClient(queueClient),
+				blobs.WithCIDNClient(cidnClientWrapper),
 			)
 		}
 

@@ -16,8 +16,7 @@ import (
 	"github.com/OpenCIDN/OpenCIDN/internal/queue"
 	"github.com/OpenCIDN/OpenCIDN/internal/utils"
 	"github.com/OpenCIDN/OpenCIDN/pkg/cache"
-	"github.com/OpenCIDN/OpenCIDN/pkg/queue/client"
-	"github.com/OpenCIDN/OpenCIDN/pkg/queue/model"
+	"github.com/OpenCIDN/OpenCIDN/pkg/cidn"
 	"github.com/OpenCIDN/OpenCIDN/pkg/token"
 	"github.com/docker/distribution/registry/api/errcode"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
@@ -38,7 +37,7 @@ type Manifests struct {
 	acceptsStr   string
 	accepts      map[string]struct{}
 
-	queueClient *client.MessageClient
+	cidnClient *cidn.Client
 }
 
 type Option func(c *Manifests)
@@ -79,9 +78,9 @@ func WithConcurrency(concurrency int) Option {
 	}
 }
 
-func WithQueueClient(queueClient *client.MessageClient) Option {
+func WithCIDNClient(cidnClient *cidn.Client) Option {
 	return func(c *Manifests) {
-		c.queueClient = queueClient
+		c.cidnClient = cidnClient
 	}
 }
 
@@ -154,18 +153,16 @@ func (c *Manifests) Serve(rw http.ResponseWriter, r *http.Request, info *PathInf
 
 	ok, _ := c.cache.StatManifest(r.Context(), info.Host, info.Image, info.Manifests)
 	if ok {
-		if c.queueClient != nil {
-			_, err := c.queueClient.Create(context.Background(), formatPathInfo(info), 0, model.MessageAttr{
-				Kind:  model.KindManifest,
-				Host:  info.Host,
-				Image: info.Image,
-				Deep:  true,
-			})
-			if err != nil {
-				c.logger.Warn("failed to create queue message", "error", err)
-				utils.ServeError(rw, r, errcode.ErrorCodeUnknown, 0)
-				return
-			}
+		if c.cidnClient != nil {
+			// Trigger async background sync using CIDN
+			go func() {
+				sourceURL := fmt.Sprintf("https://%s/v2/%s/manifests/%s", info.Host, info.Image, info.Manifests)
+				cachePath := formatPathInfo(info)
+				err := c.cidnClient.SyncBlob(context.Background(), sourceURL, cachePath)
+				if err != nil {
+					c.logger.Warn("failed to sync manifest with CIDN", "path", cachePath, "error", err)
+				}
+			}()
 		} else {
 			c.queue.AddWeight(*info, 0)
 		}
@@ -173,8 +170,8 @@ func (c *Manifests) Serve(rw http.ResponseWriter, r *http.Request, info *PathInf
 			return
 		}
 	} else {
-		if c.queueClient != nil {
-			err := c.waitingQueue(ctx, formatPathInfo(info), t.Weight, info)
+		if c.cidnClient != nil {
+			err := c.waitingCIDN(ctx, info)
 			if err != nil {
 				errStr := err.Error()
 				if strings.Contains(errStr, "status code 404") {
@@ -198,7 +195,7 @@ func (c *Manifests) Serve(rw http.ResponseWriter, r *http.Request, info *PathInf
 					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
 					return
 				}
-				c.logger.Warn("failed to wait queue message", "error", err)
+				c.logger.Warn("failed to sync manifest with CIDN", "error", err)
 				utils.ServeError(rw, r, errcode.ErrorCodeUnknown, 0)
 				return
 			} else {
@@ -223,57 +220,18 @@ func (c *Manifests) Serve(rw http.ResponseWriter, r *http.Request, info *PathInf
 	utils.ServeError(rw, r, errcode.ErrorCodeUnknown, 0)
 }
 
-func (c *Manifests) waitingQueue(ctx context.Context, msg string, weight int, info *PathInfo) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	mr, err := c.queueClient.Create(ctx, msg, weight+1, model.MessageAttr{
-		Kind:  model.KindManifest,
-		Host:  info.Host,
-		Image: info.Image,
-		Deep:  false,
-	})
+func (c *Manifests) waitingCIDN(ctx context.Context, info *PathInfo) error {
+	sourceURL := fmt.Sprintf("https://%s/v2/%s/manifests/%s", info.Host, info.Image, info.Manifests)
+	cachePath := formatPathInfo(info)
+	
+	c.logger.Info("syncing manifest with CIDN", "path", cachePath)
+	
+	err := c.cidnClient.SyncBlob(ctx, sourceURL, cachePath)
 	if err != nil {
-		return fmt.Errorf("failed to create queue: %w", err)
+		return fmt.Errorf("failed to sync manifest: %w", err)
 	}
-
-	if mr.Status == model.StatusPending || mr.Status == model.StatusProcessing {
-		c.logger.Info("watching message from queue", "msg", msg)
-
-		chMr, err := c.queueClient.Watch(ctx, mr.MessageID)
-		if err != nil {
-			return fmt.Errorf("failed to watch message: %w", err)
-		}
-	watiQueue:
-		for {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case m, ok := <-chMr:
-				if !ok {
-					time.Sleep(1 * time.Second)
-					chMr, err = c.queueClient.Watch(ctx, mr.MessageID)
-					if err != nil {
-						return fmt.Errorf("failed to re-watch message: %w", err)
-					}
-				} else {
-					mr = m
-					if mr.Status != model.StatusPending && mr.Status != model.StatusProcessing {
-						break watiQueue
-					}
-				}
-			}
-		}
-	}
-
-	switch mr.Status {
-	case model.StatusCompleted:
-		return nil
-	case model.StatusFailed:
-		return fmt.Errorf("%q Queue Error: %s", msg, mr.Data.Error)
-	default:
-		return fmt.Errorf("unexpected status %d for message %q", mr.Status, msg)
-	}
+	
+	return nil
 }
 
 func (c *Manifests) cacheManifest(info *PathInfo) (int, error) {

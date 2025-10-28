@@ -18,8 +18,7 @@ import (
 	"github.com/OpenCIDN/OpenCIDN/internal/throttled"
 	"github.com/OpenCIDN/OpenCIDN/internal/utils"
 	"github.com/OpenCIDN/OpenCIDN/pkg/cache"
-	"github.com/OpenCIDN/OpenCIDN/pkg/queue/client"
-	"github.com/OpenCIDN/OpenCIDN/pkg/queue/model"
+	"github.com/OpenCIDN/OpenCIDN/pkg/cidn"
 	"github.com/OpenCIDN/OpenCIDN/pkg/token"
 	"github.com/docker/distribution/registry/api/errcode"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
@@ -64,7 +63,7 @@ type Blobs struct {
 	blobNoRedirectLimit *rate.Limiter
 	forceBlobNoRedirect bool
 
-	queueClient *client.MessageClient
+	cidnClient *cidn.Client
 }
 
 type Option func(c *Blobs) error
@@ -150,9 +149,9 @@ func WithConcurrency(concurrency int) Option {
 	}
 }
 
-func WithQueueClient(queueClient *client.MessageClient) Option {
+func WithCIDNClient(cidnClient *cidn.Client) Option {
 	return func(c *Blobs) error {
-		c.queueClient = queueClient
+		c.cidnClient = cidnClient
 		return nil
 	}
 }
@@ -384,8 +383,8 @@ func (b *Blobs) Serve(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t
 		return
 	}
 
-	if b.queueClient != nil {
-		err := b.waitingQueue(ctx, info.Blobs, t.Weight, info)
+	if b.cidnClient != nil {
+		err := b.waitingCIDN(ctx, info)
 		if err != nil {
 			errStr := err.Error()
 			if strings.Contains(errStr, "status code 404") {
@@ -398,7 +397,7 @@ func (b *Blobs) Serve(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t
 				utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
 				return
 			}
-			b.logger.Warn("failed to wait queue message", "error", err)
+			b.logger.Warn("failed to sync blob with CIDN", "error", err)
 			utils.ServeError(rw, r, errcode.ErrorCodeUnknown, 0)
 			return
 		}
@@ -636,54 +635,16 @@ func (b *Blobs) serveCachedBlobRedirect(rw http.ResponseWriter, r *http.Request,
 	http.Redirect(rw, r, u, http.StatusTemporaryRedirect)
 }
 
-func (b *Blobs) waitingQueue(ctx context.Context, msg string, weight int, info *BlobInfo) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	mr, err := b.queueClient.Create(ctx, msg, weight+1, model.MessageAttr{
-		Kind:  model.KindBlob,
-		Host:  info.Host,
-		Image: info.Image,
-	})
+func (b *Blobs) waitingCIDN(ctx context.Context, info *BlobInfo) error {
+	sourceURL := fmt.Sprintf("https://%s/v2/%s/blobs/%s", info.Host, info.Image, info.Blobs)
+	cachePath := fmt.Sprintf("%s/%s/%s", info.Host, info.Image, info.Blobs)
+	
+	b.logger.Info("syncing blob with CIDN", "path", cachePath)
+	
+	err := b.cidnClient.SyncBlob(ctx, sourceURL, cachePath)
 	if err != nil {
-		return fmt.Errorf("failed to create queue: %w", err)
+		return fmt.Errorf("failed to sync blob: %w", err)
 	}
-
-	if mr.Status == model.StatusPending || mr.Status == model.StatusProcessing {
-		b.logger.Info("watching message from queue", "msg", msg)
-
-		chMr, err := b.queueClient.Watch(ctx, mr.MessageID)
-		if err != nil {
-			return fmt.Errorf("failed to watch message: %w", err)
-		}
-	watiQueue:
-		for {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case m, ok := <-chMr:
-				if !ok {
-					time.Sleep(1 * time.Second)
-					chMr, err = b.queueClient.Watch(ctx, mr.MessageID)
-					if err != nil {
-						return fmt.Errorf("failed to re-watch message: %w", err)
-					}
-				} else {
-					mr = m
-					if mr.Status != model.StatusPending && mr.Status != model.StatusProcessing {
-						break watiQueue
-					}
-				}
-			}
-		}
-	}
-
-	switch mr.Status {
-	case model.StatusCompleted:
-		return nil
-	case model.StatusFailed:
-		return fmt.Errorf("%q Queue Error: %s", msg, mr.Data.Error)
-	default:
-		return fmt.Errorf("unexpected status %d for message %q", mr.Status, msg)
-	}
+	
+	return nil
 }
