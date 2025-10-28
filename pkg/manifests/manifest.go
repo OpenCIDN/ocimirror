@@ -186,6 +186,11 @@ func (c *Manifests) Serve(rw http.ResponseWriter, r *http.Request, info *PathInf
 				} else if strings.Contains(errStr, "status code 401") {
 					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
 					return
+				} else if strings.Contains(errStr, "status code 412") {
+					// For gcr.io
+					// unexpected status code 412 Precondition Failed: Container Registry is deprecated and shutting down, please use the auto migration tool to migrate to Artifact Registry (gcloud artifacts docker upgrade migrate --projects='arrikto'). For more details see: https://cloud.google.com/artifact-registry/docs/transition/auto-migrate-gcr-ar"
+					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
+					return
 				} else if strings.Contains(errStr, "unsupported target response") {
 					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
 					return
