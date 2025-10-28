@@ -2,6 +2,8 @@ package blobs
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,11 +19,17 @@ import (
 	"github.com/OpenCIDN/OpenCIDN/internal/seeker"
 	"github.com/OpenCIDN/OpenCIDN/internal/throttled"
 	"github.com/OpenCIDN/OpenCIDN/internal/utils"
-	"github.com/OpenCIDN/OpenCIDN/pkg/cache"
+	localcache "github.com/OpenCIDN/OpenCIDN/pkg/cache"
 	"github.com/OpenCIDN/OpenCIDN/pkg/token"
+	"github.com/OpenCIDN/cidn/pkg/apis/task/v1alpha1"
+	"github.com/OpenCIDN/cidn/pkg/clientset/versioned"
+	informers "github.com/OpenCIDN/cidn/pkg/informers/externalversions/task/v1alpha1"
 	"github.com/docker/distribution/registry/api/errcode"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	"golang.org/x/time/rate"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/cache"
 )
 
 var (
@@ -49,10 +57,10 @@ type Blobs struct {
 
 	httpClient *http.Client
 	logger     *slog.Logger
-	cache      *cache.Cache
+	cache      *localcache.Cache
 
 	bigCacheSize int
-	bigCache     *cache.Cache
+	bigCache     *localcache.Cache
 
 	blobCacheDuration time.Duration
 	blobCache         *blobsCache
@@ -61,18 +69,23 @@ type Blobs struct {
 	blobNoRedirectSize  int
 	blobNoRedirectLimit *rate.Limiter
 	forceBlobNoRedirect bool
+
+	// CIDN integration
+	cidnClient       versioned.Interface
+	cidnBlobInformer informers.BlobInformer
+	cidnDestination  string
 }
 
 type Option func(c *Blobs) error
 
-func WithCache(cache *cache.Cache) Option {
+func WithCache(cache *localcache.Cache) Option {
 	return func(c *Blobs) error {
 		c.cache = cache
 		return nil
 	}
 }
 
-func WithBigCache(cache *cache.Cache, size int) Option {
+func WithBigCache(cache *localcache.Cache, size int) Option {
 	return func(c *Blobs) error {
 		c.bigCache = cache
 		c.bigCacheSize = size
@@ -142,6 +155,15 @@ func WithConcurrency(concurrency int) Option {
 			concurrency = 1
 		}
 		c.concurrency = concurrency
+		return nil
+	}
+}
+
+func WithCIDNClient(client versioned.Interface, blobInformer informers.BlobInformer, destination string) Option {
+	return func(c *Blobs) error {
+		c.cidnClient = client
+		c.cidnBlobInformer = blobInformer
+		c.cidnDestination = destination
 		return nil
 	}
 }
@@ -217,6 +239,19 @@ func (b *Blobs) worker(ctx context.Context) {
 			return
 		}
 
+		// Try CIDN first if available
+		if b.cidnClient != nil {
+			err := b.cacheBlobWithCIDN(ctx, &info)
+			if err != nil {
+				b.logger.Warn("CIDN cache failed, falling back to direct download", "info", info, "error", err)
+			} else {
+				// CIDN succeeded, mark as done
+				finish()
+				continue
+			}
+		}
+
+		// Fall back to direct download
 		size, continueFunc, sc, err := b.cacheBlob(&info)
 		if err != nil {
 			b.logger.Warn("failed download file request", "info", info, "error", err)
@@ -490,6 +525,149 @@ func (b *Blobs) cacheBlob(info *BlobInfo) (int64, func() error, int, error) {
 	}
 
 	return resp.ContentLength, continueFunc, 0, nil
+}
+
+func getBlobName(digest string) string {
+	m := md5.Sum([]byte(digest))
+	return hex.EncodeToString(m[:])
+}
+
+func (b *Blobs) cacheBlobWithCIDN(ctx context.Context, info *BlobInfo) error {
+	if b.cidnClient == nil {
+		return nil
+	}
+
+	blobs := b.cidnClient.TaskV1alpha1().Blobs()
+	blobPath := fmt.Sprintf("/v2/%s/blobs/%s", info.Image, info.Blobs)
+	name := getBlobName(info.Blobs)
+
+	// Check if blob already exists via informer
+	blob, err := b.cidnBlobInformer.Lister().Get(name)
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			b.logger.Warn("Error getting blob from informer", "error", err)
+			return err
+		}
+
+		// Create new blob if it doesn't exist
+		sourceURL := fmt.Sprintf("https://%s%s", info.Host, blobPath)
+		blob, err = blobs.Create(ctx, &v1alpha1.Blob{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: name,
+				Annotations: map[string]string{
+					v1alpha1.BlobDisplayNameAnnotation: sourceURL,
+				},
+			},
+			Spec: v1alpha1.BlobSpec{
+				MaximumRunning:   10,
+				MinimumChunkSize: 128 * 1024 * 1024,
+				Source: []v1alpha1.BlobSource{
+					{
+						URL: sourceURL,
+					},
+				},
+				Destination: []v1alpha1.BlobDestination{
+					{
+						Name:         b.cidnDestination,
+						Path:         blobPath,
+						SkipIfExists: true,
+					},
+				},
+			},
+		}, metav1.CreateOptions{})
+		if err != nil && !apierrors.IsAlreadyExists(err) {
+			b.logger.Warn("Failed to create blob", "error", err)
+			return err
+		}
+	}
+
+	// Check blob status
+	switch blob.Status.Phase {
+	case v1alpha1.BlobPhaseSucceeded:
+		return nil
+	case v1alpha1.BlobPhaseFailed:
+		errorMsg := "blob sync failed"
+		for _, condition := range blob.Status.Conditions {
+			if condition.Message != "" {
+				errorMsg = condition.Message
+				break
+			}
+		}
+		return fmt.Errorf("CIDN blob sync failed: %s", errorMsg)
+	}
+
+	// Blob is pending or running, wait for completion
+	statusChan := make(chan *v1alpha1.Blob, 1)
+	defer close(statusChan)
+
+	// Add event handler to watch for blob status changes
+	handler := cache.ResourceEventHandlerFuncs{
+		UpdateFunc: func(oldObj, newObj interface{}) {
+			newBlob, ok := newObj.(*v1alpha1.Blob)
+			if !ok {
+				return
+			}
+			if newBlob.Name == name {
+				select {
+				case statusChan <- newBlob:
+				default:
+				}
+			}
+		},
+	}
+
+	registration, err := b.cidnBlobInformer.Informer().AddEventHandler(handler)
+	if err != nil {
+		b.logger.Warn("Failed to add event handler", "error", err)
+		return err
+	}
+	defer func() {
+		if err := b.cidnBlobInformer.Informer().RemoveEventHandler(registration); err != nil {
+			b.logger.Warn("Failed to remove event handler", "error", err)
+		}
+	}()
+
+	// Wait for blob to complete
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case blob := <-statusChan:
+			switch blob.Status.Phase {
+			case v1alpha1.BlobPhaseSucceeded:
+				return nil
+			case v1alpha1.BlobPhaseFailed:
+				errorMsg := "blob sync failed"
+				for _, condition := range blob.Status.Conditions {
+					if condition.Message != "" {
+						errorMsg = condition.Message
+						break
+					}
+				}
+				return fmt.Errorf("CIDN blob sync failed: %s", errorMsg)
+			}
+		case <-time.After(30 * time.Second):
+			// Re-check blob status periodically
+			blob, err = blobs.Get(ctx, name, metav1.GetOptions{})
+			if err != nil {
+				b.logger.Warn("Failed to get blob", "error", err)
+				return err
+			}
+			switch blob.Status.Phase {
+			case v1alpha1.BlobPhaseSucceeded:
+				return nil
+			case v1alpha1.BlobPhaseFailed:
+				errorMsg := "blob sync failed"
+				for _, condition := range blob.Status.Conditions {
+					if condition.Message != "" {
+						errorMsg = condition.Message
+						break
+					}
+				}
+				return fmt.Errorf("CIDN blob sync failed: %s", errorMsg)
+			}
+		}
+	}
 }
 
 func (b *Blobs) serveCachedBlobHead(rw http.ResponseWriter, r *http.Request, size int64) bool {
