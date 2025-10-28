@@ -130,7 +130,9 @@ func WithBlobCacheDuration(blobCacheDuration time.Duration) Option {
 
 func WithConcurrency(concurrency int) Option {
 	return func(c *Blobs) error {
-		// Deprecated: concurrency is no longer used as queue is now synchronous
+		// Deprecated: concurrency is no longer used as the queue is now synchronous.
+		// When queueClient is not configured, blob caching happens synchronously inline with requests.
+		// This option is kept for backward compatibility and will be removed in a future version.
 		return nil
 	}
 }
@@ -329,7 +331,9 @@ func (b *Blobs) Serve(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t
 		err = continueFunc()
 		if err != nil {
 			b.logger.Warn("failed download file", "info", info, "error", err)
-			b.blobCache.PutError(info.Blobs, err, 0)
+			// Wrap the error to provide more context while preserving the original error
+			wrappedErr := fmt.Errorf("blob download failed: %w", err)
+			b.blobCache.PutError(info.Blobs, wrappedErr, 0)
 			utils.ServeError(rw, r, errcode.ErrorCodeUnknown, 0)
 			return
 		}
