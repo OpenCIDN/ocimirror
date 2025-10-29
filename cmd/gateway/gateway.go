@@ -20,7 +20,6 @@ import (
 	"github.com/OpenCIDN/OpenCIDN/pkg/cache"
 	"github.com/OpenCIDN/OpenCIDN/pkg/gateway"
 	"github.com/OpenCIDN/OpenCIDN/pkg/manifests"
-	"github.com/OpenCIDN/OpenCIDN/pkg/queue/client"
 	"github.com/OpenCIDN/OpenCIDN/pkg/signing"
 	"github.com/OpenCIDN/OpenCIDN/pkg/token"
 	"github.com/OpenCIDN/OpenCIDN/pkg/transport"
@@ -77,9 +76,6 @@ type flagpole struct {
 	OverrideDefaultRegistry map[string]string
 
 	RegistryAlias map[string]string
-
-	QueueURL   string
-	QueueToken string
 }
 
 func NewCommand() *cobra.Command {
@@ -134,9 +130,6 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&flags.DefaultRegistry, "default-registry", flags.DefaultRegistry, "default registry used for non full-path docker pull, like:docker.io")
 	cmd.Flags().StringToStringVar(&flags.OverrideDefaultRegistry, "override-default-registry", flags.OverrideDefaultRegistry, "override default registry")
 	cmd.Flags().StringToStringVar(&flags.RegistryAlias, "registry-alias", flags.RegistryAlias, "registry alias")
-
-	cmd.Flags().StringVar(&flags.QueueToken, "queue-token", flags.QueueToken, "Queue token")
-	cmd.Flags().StringVar(&flags.QueueURL, "queue-url", flags.QueueURL, "Queue URL")
 
 	return cmd
 }
@@ -299,16 +292,6 @@ func runE(ctx context.Context, flags *flagpole) error {
 				return fmt.Errorf("create cache failed: %w", err)
 			}
 			blobsOpts = append(blobsOpts, blobs.WithBigCache(bigsdcache, flags.BigStorageSize))
-		}
-
-		if flags.QueueURL != "" {
-			queueClient := client.NewMessageClient(http.DefaultClient, flags.QueueURL, flags.QueueToken)
-			manifestsOpts = append(manifestsOpts,
-				manifests.WithQueueClient(queueClient),
-			)
-			blobsOpts = append(blobsOpts,
-				blobs.WithQueueClient(queueClient),
-			)
 		}
 
 		manifestsOpts = append(manifestsOpts, manifests.WithClient(httpClient))

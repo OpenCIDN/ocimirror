@@ -15,7 +15,6 @@ import (
 	"github.com/OpenCIDN/OpenCIDN/internal/signals"
 	"github.com/OpenCIDN/OpenCIDN/pkg/blobs"
 	"github.com/OpenCIDN/OpenCIDN/pkg/cache"
-	"github.com/OpenCIDN/OpenCIDN/pkg/queue/client"
 	"github.com/OpenCIDN/OpenCIDN/pkg/signing"
 	"github.com/OpenCIDN/OpenCIDN/pkg/token"
 	"github.com/OpenCIDN/OpenCIDN/pkg/transport"
@@ -61,9 +60,6 @@ type flagpole struct {
 	BlobNoRedirectMaxSizePerSecond int
 	BlobCacheDuration              time.Duration
 	ForceBlobNoRedirect            bool
-
-	QueueURL   string
-	QueueToken string
 }
 
 func NewCommand() *cobra.Command {
@@ -107,9 +103,6 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().IntVar(&flags.BlobNoRedirectMaxSizePerSecond, "blob-no-redirect-max-size-per-second", flags.BlobNoRedirectMaxSizePerSecond, "Maximum size per second for no redirect")
 	cmd.Flags().DurationVar(&flags.BlobCacheDuration, "blob-cache-duration", flags.BlobCacheDuration, "Blob cache duration")
 	cmd.Flags().BoolVar(&flags.ForceBlobNoRedirect, "force-blob-no-redirect", flags.ForceBlobNoRedirect, "Force blob no redirect")
-
-	cmd.Flags().StringVar(&flags.QueueToken, "queue-token", flags.QueueToken, "Queue token")
-	cmd.Flags().StringVar(&flags.QueueURL, "queue-url", flags.QueueURL, "Queue URL")
 
 	return cmd
 }
@@ -174,11 +167,6 @@ func runE(ctx context.Context, flags *flagpole) error {
 			return fmt.Errorf("create cache failed: %w", err)
 		}
 		blobsOpts = append(blobsOpts, blobs.WithBigCache(bigsdcache, flags.BigStorageSize))
-	}
-
-	if flags.QueueURL != "" {
-		queueClient := client.NewMessageClient(http.DefaultClient, flags.QueueURL, flags.QueueToken)
-		blobsOpts = append(blobsOpts, blobs.WithQueueClient(queueClient))
 	}
 
 	if flags.TokenPublicKeyFile != "" {
