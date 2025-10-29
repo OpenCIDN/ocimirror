@@ -66,14 +66,6 @@ func WithCache(cache *cache.Cache) Option {
 	}
 }
 
-func WithConcurrency(concurrency int) Option {
-	return func(c *Manifests) {
-		// Deprecated: concurrency is no longer used as the queue is now synchronous.
-		// When queueClient is not configured, manifest caching happens synchronously inline with requests.
-		// This option is kept for backward compatibility and will be removed in a future version.
-	}
-}
-
 func WithQueueClient(queueClient *client.MessageClient) Option {
 	return func(c *Manifests) {
 		c.queueClient = queueClient

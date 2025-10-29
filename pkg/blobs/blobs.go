@@ -128,15 +128,6 @@ func WithBlobCacheDuration(blobCacheDuration time.Duration) Option {
 	}
 }
 
-func WithConcurrency(concurrency int) Option {
-	return func(c *Blobs) error {
-		// Deprecated: concurrency is no longer used as the queue is now synchronous.
-		// When queueClient is not configured, blob caching happens synchronously inline with requests.
-		// This option is kept for backward compatibility and will be removed in a future version.
-		return nil
-	}
-}
-
 func WithQueueClient(queueClient *client.MessageClient) Option {
 	return func(c *Blobs) error {
 		c.queueClient = queueClient
@@ -327,7 +318,7 @@ func (b *Blobs) Serve(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t
 			utils.ServeError(rw, r, err, sc)
 			return
 		}
-		b.logger.Info("finish download file", "info", info)
+		b.logger.Info("finish caching blob", "info", info)
 	}
 
 	if b.serveCache(rw, r, info, t) {

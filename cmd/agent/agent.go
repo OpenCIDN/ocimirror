@@ -62,8 +62,6 @@ type flagpole struct {
 	BlobCacheDuration              time.Duration
 	ForceBlobNoRedirect            bool
 
-	Concurrency int
-
 	QueueURL   string
 	QueueToken string
 }
@@ -72,7 +70,6 @@ func NewCommand() *cobra.Command {
 	flags := &flagpole{
 		Address:           ":18002",
 		BlobCacheDuration: time.Hour,
-		Concurrency:       10,
 		SignLink:          true,
 		LinkExpires:       1 * time.Hour,
 	}
@@ -110,8 +107,6 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().IntVar(&flags.BlobNoRedirectMaxSizePerSecond, "blob-no-redirect-max-size-per-second", flags.BlobNoRedirectMaxSizePerSecond, "Maximum size per second for no redirect")
 	cmd.Flags().DurationVar(&flags.BlobCacheDuration, "blob-cache-duration", flags.BlobCacheDuration, "Blob cache duration")
 	cmd.Flags().BoolVar(&flags.ForceBlobNoRedirect, "force-blob-no-redirect", flags.ForceBlobNoRedirect, "Force blob no redirect")
-
-	cmd.Flags().IntVar(&flags.Concurrency, "concurrency", flags.Concurrency, "Concurrency to source")
 
 	cmd.Flags().StringVar(&flags.QueueToken, "queue-token", flags.QueueToken, "Queue token")
 	cmd.Flags().StringVar(&flags.QueueURL, "queue-url", flags.QueueURL, "Queue URL")
@@ -159,7 +154,6 @@ func runE(ctx context.Context, flags *flagpole) error {
 		blobs.WithBlobNoRedirectMaxSizePerSecond(flags.BlobNoRedirectMaxSizePerSecond),
 		blobs.WithBlobCacheDuration(flags.BlobCacheDuration),
 		blobs.WithForceBlobNoRedirect(flags.ForceBlobNoRedirect),
-		blobs.WithConcurrency(flags.Concurrency),
 	)
 
 	if flags.BigStorageURL != "" && flags.BigStorageSize > 0 {
