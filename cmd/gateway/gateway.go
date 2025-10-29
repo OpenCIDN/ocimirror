@@ -328,14 +328,10 @@ func runE(ctx context.Context, flags *flagpole) error {
 			logger.Info("CIDN client initialized", "destination", u.Scheme)
 
 			// Start CIDN informers
-			sharedInformerFactory := externalversions.NewSharedInformerFactory(clientset, 0)
-			blobInformer := sharedInformerFactory.Task().V1alpha1().Blobs()
-			go blobInformer.Informer().RunWithContext(ctx)
-
 			// Note: The blobs and manifests packages would need to be extended to use CIDN client
-			// For now, we just initialize it to prepare for future integration
-			_ = clientset
-			_ = blobInformer
+			// For now, we just initialize the informers to prepare for future integration
+			sharedInformerFactory := externalversions.NewSharedInformerFactory(clientset, 0)
+			go sharedInformerFactory.Task().V1alpha1().Blobs().Informer().RunWithContext(ctx)
 		}
 
 		manifest, err := manifests.NewManifests(
