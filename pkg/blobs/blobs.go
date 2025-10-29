@@ -320,21 +320,11 @@ func (b *Blobs) Serve(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t
 		}
 	} else {
 		// Synchronously cache the blob
-		_, continueFunc, sc, err := b.cacheBlob(info)
-		if err != nil {
-			b.logger.Warn("failed download file request", "info", info, "error", err)
-			b.blobCache.PutError(info.Blobs, err, sc)
-			utils.ServeError(rw, r, err, sc)
-			return
-		}
-
-		err = continueFunc()
+		sc, err := b.cacheBlob(info)
 		if err != nil {
 			b.logger.Warn("failed download file", "info", info, "error", err)
-			// Wrap the error to provide more context while preserving the original error
-			wrappedErr := fmt.Errorf("blob download failed: %w", err)
-			b.blobCache.PutError(info.Blobs, wrappedErr, 0)
-			utils.ServeError(rw, r, errcode.ErrorCodeUnknown, 0)
+			b.blobCache.PutError(info.Blobs, err, sc)
+			utils.ServeError(rw, r, err, sc)
 			return
 		}
 		b.logger.Info("finish download file", "info", info)
@@ -348,7 +338,7 @@ func (b *Blobs) Serve(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t
 	utils.ServeError(rw, r, errcode.ErrorCodeUnknown, 0)
 }
 
-func (b *Blobs) cacheBlob(info *BlobInfo) (int64, func() error, int, error) {
+func (b *Blobs) cacheBlob(info *BlobInfo) (int, error) {
 	ctx := context.Background()
 	u := &url.URL{
 		Scheme: "https",
@@ -358,7 +348,7 @@ func (b *Blobs) cacheBlob(info *BlobInfo) (int64, func() error, int, error) {
 	forwardReq, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		b.logger.Warn("failed to new request", "url", u.String(), "error", err)
-		return 0, nil, 0, err
+		return 0, err
 	}
 
 	forwardReq.Header.Set("Accept", "*/*")
@@ -367,29 +357,29 @@ func (b *Blobs) cacheBlob(info *BlobInfo) (int64, func() error, int, error) {
 	if err != nil {
 		var tErr *transport.Error
 		if errors.As(err, &tErr) {
-			return 0, nil, http.StatusForbidden, errcode.ErrorCodeDenied
+			return http.StatusForbidden, errcode.ErrorCodeDenied
 		}
 		b.logger.Warn("failed to request", "url", u.String(), "error", err)
-		return 0, nil, 0, errcode.ErrorCodeUnknown
+		return 0, errcode.ErrorCodeUnknown
 	}
 
 	switch resp.StatusCode {
 	case http.StatusUnauthorized, http.StatusForbidden:
 		resp.Body.Close()
-		return 0, nil, 0, errcode.ErrorCodeDenied
+		return 0, errcode.ErrorCodeDenied
 	}
 
 	switch resp.StatusCode {
 	case http.StatusUnauthorized, http.StatusForbidden:
 		resp.Body.Close()
 		b.logger.Error("upstream denied", "statusCode", resp.StatusCode, "url", u.String())
-		return 0, nil, 0, errcode.ErrorCodeDenied
+		return 0, errcode.ErrorCodeDenied
 	}
 	if resp.StatusCode < http.StatusOK ||
 		(resp.StatusCode >= http.StatusMultipleChoices && resp.StatusCode < http.StatusBadRequest) {
 		resp.Body.Close()
 		b.logger.Error("upstream unkown code", "statusCode", resp.StatusCode, "url", u.String())
-		return 0, nil, 0, errcode.ErrorCodeUnknown
+		return 0, errcode.ErrorCodeUnknown
 	}
 
 	if resp.StatusCode >= http.StatusBadRequest {
@@ -397,60 +387,57 @@ func (b *Blobs) cacheBlob(info *BlobInfo) (int64, func() error, int, error) {
 		resp.Body.Close()
 		if err != nil {
 			b.logger.Error("failed to get body", "statusCode", resp.StatusCode, "url", u.String(), "error", err)
-			return 0, nil, 0, errcode.ErrorCodeUnknown
+			return 0, errcode.ErrorCodeUnknown
 		}
 		if !json.Valid(body) {
 			b.logger.Error("invalid body", "statusCode", resp.StatusCode, "url", u.String(), "body", string(body))
-			return 0, nil, 0, errcode.ErrorCodeDenied
+			return 0, errcode.ErrorCodeDenied
 		}
 		var retErrs errcode.Errors
 		err = retErrs.UnmarshalJSON(body)
 		if err != nil {
 			b.logger.Error("failed to unmarshal body", "statusCode", resp.StatusCode, "url", u.String(), "body", string(body))
-			return 0, nil, 0, errcode.ErrorCodeUnknown
+			return 0, errcode.ErrorCodeUnknown
 		}
-		return 0, nil, resp.StatusCode, retErrs
+		return resp.StatusCode, retErrs
 	}
 
-	continueFunc := func() error {
-		defer resp.Body.Close()
+	// Download and cache the blob inline
+	defer resp.Body.Close()
 
-		if b.bigCache != nil && b.bigCacheSize > 0 && resp.ContentLength > int64(b.bigCacheSize) {
-			size, err := b.bigCache.PutBlob(ctx, info.Blobs, resp.Body)
-			if err != nil {
-				return fmt.Errorf("Put to big cache: %w", err)
-			}
-
-			stat, err := b.cache.StatBlob(ctx, info.Blobs)
-			if err != nil {
-				return err
-			}
-
-			if size != stat.Size() {
-				return fmt.Errorf("size mismatch: expected %d, got %d", stat.Size(), size)
-			}
-			b.blobCache.PutNoTTL(info.Blobs, stat.ModTime(), size, true)
-			return nil
+	if b.bigCache != nil && b.bigCacheSize > 0 && resp.ContentLength > int64(b.bigCacheSize) {
+		size, err := b.bigCache.PutBlob(ctx, info.Blobs, resp.Body)
+		if err != nil {
+			return 0, fmt.Errorf("Put to big cache: %w", err)
 		}
 
-		size, err := b.cache.PutBlob(ctx, info.Blobs, resp.Body)
+		stat, err := b.bigCache.StatBlob(ctx, info.Blobs)
 		if err != nil {
-			return err
-		}
-
-		stat, err := b.cache.StatBlob(ctx, info.Blobs)
-		if err != nil {
-			return err
+			return 0, err
 		}
 
 		if size != stat.Size() {
-			return fmt.Errorf("size mismatch: expected %d, got %d", stat.Size(), size)
+			return 0, fmt.Errorf("size mismatch: expected %d, got %d", stat.Size(), size)
 		}
-		b.blobCache.Put(info.Blobs, stat.ModTime(), size, false)
-		return nil
+		b.blobCache.PutNoTTL(info.Blobs, stat.ModTime(), size, true)
+		return 0, nil
 	}
 
-	return resp.ContentLength, continueFunc, 0, nil
+	size, err := b.cache.PutBlob(ctx, info.Blobs, resp.Body)
+	if err != nil {
+		return 0, err
+	}
+
+	stat, err := b.cache.StatBlob(ctx, info.Blobs)
+	if err != nil {
+		return 0, err
+	}
+
+	if size != stat.Size() {
+		return 0, fmt.Errorf("size mismatch: expected %d, got %d", stat.Size(), size)
+	}
+	b.blobCache.Put(info.Blobs, stat.ModTime(), size, false)
+	return 0, nil
 }
 
 func (b *Blobs) serveCachedBlobHead(rw http.ResponseWriter, r *http.Request, size int64) bool {
