@@ -20,7 +20,6 @@ import (
 	"github.com/OpenCIDN/OpenCIDN/pkg/cache"
 	"github.com/OpenCIDN/OpenCIDN/pkg/gateway"
 	"github.com/OpenCIDN/OpenCIDN/pkg/manifests"
-	"github.com/OpenCIDN/OpenCIDN/pkg/queue/client"
 	"github.com/OpenCIDN/OpenCIDN/pkg/signing"
 	"github.com/OpenCIDN/OpenCIDN/pkg/token"
 	"github.com/OpenCIDN/OpenCIDN/pkg/transport"
@@ -78,8 +77,9 @@ type flagpole struct {
 
 	RegistryAlias map[string]string
 
-	QueueURL   string
-	QueueToken string
+	Kubeconfig            string
+	Master                string
+	InsecureSkipTLSVerify bool
 }
 
 func NewCommand() *cobra.Command {
@@ -135,8 +135,9 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringToStringVar(&flags.OverrideDefaultRegistry, "override-default-registry", flags.OverrideDefaultRegistry, "override default registry")
 	cmd.Flags().StringToStringVar(&flags.RegistryAlias, "registry-alias", flags.RegistryAlias, "registry alias")
 
-	cmd.Flags().StringVar(&flags.QueueToken, "queue-token", flags.QueueToken, "Queue token")
-	cmd.Flags().StringVar(&flags.QueueURL, "queue-url", flags.QueueURL, "Queue URL")
+	cmd.Flags().StringVar(&flags.Kubeconfig, "kubeconfig", flags.Kubeconfig, "Path to the kubeconfig file to use")
+	cmd.Flags().StringVar(&flags.Master, "master", flags.Master, "The address of the Kubernetes API server")
+	cmd.Flags().BoolVar(&flags.InsecureSkipTLSVerify, "insecure-skip-tls-verify", false, "If true, the server's certificate will not be checked for validity. This will make your HTTPS connections insecure")
 
 	return cmd
 }
@@ -299,16 +300,6 @@ func runE(ctx context.Context, flags *flagpole) error {
 				return fmt.Errorf("create cache failed: %w", err)
 			}
 			blobsOpts = append(blobsOpts, blobs.WithBigCache(bigsdcache, flags.BigStorageSize))
-		}
-
-		if flags.QueueURL != "" {
-			queueClient := client.NewMessageClient(http.DefaultClient, flags.QueueURL, flags.QueueToken)
-			manifestsOpts = append(manifestsOpts,
-				manifests.WithQueueClient(queueClient),
-			)
-			blobsOpts = append(blobsOpts,
-				blobs.WithQueueClient(queueClient),
-			)
 		}
 
 		manifestsOpts = append(manifestsOpts, manifests.WithClient(httpClient))

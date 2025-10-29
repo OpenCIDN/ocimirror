@@ -17,8 +17,6 @@ import (
 	"github.com/OpenCIDN/OpenCIDN/internal/throttled"
 	"github.com/OpenCIDN/OpenCIDN/internal/utils"
 	"github.com/OpenCIDN/OpenCIDN/pkg/cache"
-	"github.com/OpenCIDN/OpenCIDN/pkg/queue/client"
-	"github.com/OpenCIDN/OpenCIDN/pkg/queue/model"
 	"github.com/OpenCIDN/OpenCIDN/pkg/token"
 	"github.com/docker/distribution/registry/api/errcode"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
@@ -51,8 +49,6 @@ type Blobs struct {
 	blobNoRedirectSize  int
 	blobNoRedirectLimit *rate.Limiter
 	forceBlobNoRedirect bool
-
-	queueClient *client.MessageClient
 }
 
 type Option func(c *Blobs) error
@@ -124,13 +120,6 @@ func WithBlobCacheDuration(blobCacheDuration time.Duration) Option {
 			blobCacheDuration = 10 * time.Second
 		}
 		c.blobCacheDuration = blobCacheDuration
-		return nil
-	}
-}
-
-func WithQueueClient(queueClient *client.MessageClient) Option {
-	return func(c *Blobs) error {
-		c.queueClient = queueClient
 		return nil
 	}
 }
@@ -285,41 +274,19 @@ func (b *Blobs) serveCache(rw http.ResponseWriter, r *http.Request, info *BlobIn
 }
 
 func (b *Blobs) Serve(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t *token.Token) {
-	ctx := r.Context()
-
 	if b.serveCache(rw, r, info, t) {
 		return
 	}
 
-	if b.queueClient != nil {
-		err := b.waitingQueue(ctx, info.Blobs, t.Weight, info)
-		if err != nil {
-			errStr := err.Error()
-			if strings.Contains(errStr, "status code 404") {
-				utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
-				return
-			} else if strings.Contains(errStr, "status code 403") {
-				utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
-				return
-			} else if strings.Contains(errStr, "status code 401") {
-				utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
-				return
-			}
-			b.logger.Warn("failed to wait queue message", "error", err)
-			utils.ServeError(rw, r, errcode.ErrorCodeUnknown, 0)
-			return
-		}
-	} else {
-		// Synchronously cache the blob
-		sc, err := b.cacheBlob(info)
-		if err != nil {
-			b.logger.Warn("failed download file", "info", info, "error", err)
-			b.blobCache.PutError(info.Blobs, err, sc)
-			utils.ServeError(rw, r, err, sc)
-			return
-		}
-		b.logger.Info("finish caching blob", "info", info)
+	// Synchronously cache the blob
+	sc, err := b.cacheBlob(info)
+	if err != nil {
+		b.logger.Warn("failed download file", "info", info, "error", err)
+		b.blobCache.PutError(info.Blobs, err, sc)
+		utils.ServeError(rw, r, err, sc)
+		return
 	}
+	b.logger.Info("finish caching blob", "info", info)
 
 	if b.serveCache(rw, r, info, t) {
 		return
@@ -542,56 +509,4 @@ func (b *Blobs) serveCachedBlobRedirect(rw http.ResponseWriter, r *http.Request,
 
 	b.logger.Info("Cache hit", "digest", info.Blobs, "url", u)
 	http.Redirect(rw, r, u, http.StatusTemporaryRedirect)
-}
-
-func (b *Blobs) waitingQueue(ctx context.Context, msg string, weight int, info *BlobInfo) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	mr, err := b.queueClient.Create(ctx, msg, weight+1, model.MessageAttr{
-		Kind:  model.KindBlob,
-		Host:  info.Host,
-		Image: info.Image,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create queue: %w", err)
-	}
-
-	if mr.Status == model.StatusPending || mr.Status == model.StatusProcessing {
-		b.logger.Info("watching message from queue", "msg", msg)
-
-		chMr, err := b.queueClient.Watch(ctx, mr.MessageID)
-		if err != nil {
-			return fmt.Errorf("failed to watch message: %w", err)
-		}
-	watiQueue:
-		for {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case m, ok := <-chMr:
-				if !ok {
-					time.Sleep(1 * time.Second)
-					chMr, err = b.queueClient.Watch(ctx, mr.MessageID)
-					if err != nil {
-						return fmt.Errorf("failed to re-watch message: %w", err)
-					}
-				} else {
-					mr = m
-					if mr.Status != model.StatusPending && mr.Status != model.StatusProcessing {
-						break watiQueue
-					}
-				}
-			}
-		}
-	}
-
-	switch mr.Status {
-	case model.StatusCompleted:
-		return nil
-	case model.StatusFailed:
-		return fmt.Errorf("%q Queue Error: %s", msg, mr.Data.Error)
-	default:
-		return fmt.Errorf("unexpected status %d for message %q", mr.Status, msg)
-	}
 }
