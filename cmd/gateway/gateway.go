@@ -78,8 +78,6 @@ type flagpole struct {
 
 	RegistryAlias map[string]string
 
-	Concurrency int
-
 	QueueURL   string
 	QueueToken string
 }
@@ -89,7 +87,6 @@ func NewCommand() *cobra.Command {
 		Address:               ":18001",
 		BlobCacheDuration:     time.Hour,
 		ManifestCacheDuration: time.Hour,
-		Concurrency:           10,
 		SignLink:              true,
 		LinkExpires:           1 * time.Hour,
 	}
@@ -137,8 +134,6 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&flags.DefaultRegistry, "default-registry", flags.DefaultRegistry, "default registry used for non full-path docker pull, like:docker.io")
 	cmd.Flags().StringToStringVar(&flags.OverrideDefaultRegistry, "override-default-registry", flags.OverrideDefaultRegistry, "override default registry")
 	cmd.Flags().StringToStringVar(&flags.RegistryAlias, "registry-alias", flags.RegistryAlias, "registry alias")
-
-	cmd.Flags().IntVar(&flags.Concurrency, "concurrency", flags.Concurrency, "Concurrency to source")
 
 	cmd.Flags().StringVar(&flags.QueueToken, "queue-token", flags.QueueToken, "Queue token")
 	cmd.Flags().StringVar(&flags.QueueURL, "queue-url", flags.QueueURL, "Queue URL")
@@ -240,14 +235,11 @@ func runE(ctx context.Context, flags *flagpole) error {
 	}
 
 	if flags.StorageURL != "" {
-		manifestsOpts := []manifests.Option{
-			manifests.WithConcurrency(flags.Concurrency),
-		}
+		manifestsOpts := []manifests.Option{}
 
 		blobsOpts := []blobs.Option{
 			blobs.WithLogger(logger),
 			blobs.WithAuthenticator(authenticator),
-			blobs.WithConcurrency(flags.Concurrency),
 			blobs.WithBlobNoRedirectSize(flags.BlobNoRedirectSize),
 			blobs.WithBlobNoRedirectMaxSizePerSecond(flags.BlobNoRedirectMaxSizePerSecond),
 			blobs.WithBlobCacheDuration(flags.BlobCacheDuration),
