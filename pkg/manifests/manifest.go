@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/OpenCIDN/OpenCIDN/internal/queue"
 	"github.com/OpenCIDN/OpenCIDN/internal/utils"
 	"github.com/OpenCIDN/OpenCIDN/pkg/cache"
 	"github.com/OpenCIDN/OpenCIDN/pkg/queue/client"
@@ -24,9 +23,6 @@ import (
 )
 
 type Manifests struct {
-	concurrency int
-	queue       *queue.WeightQueue[PathInfo]
-
 	httpClient *http.Client
 	logger     *slog.Logger
 	cache      *cache.Cache
@@ -72,10 +68,9 @@ func WithCache(cache *cache.Cache) Option {
 
 func WithConcurrency(concurrency int) Option {
 	return func(c *Manifests) {
-		if concurrency < 1 {
-			concurrency = 1
-		}
-		c.concurrency = concurrency
+		// Deprecated: concurrency is no longer used as the queue is now synchronous.
+		// When queueClient is not configured, manifest caching happens synchronously inline with requests.
+		// This option is kept for backward compatibility and will be removed in a future version.
 	}
 }
 
@@ -97,8 +92,6 @@ func NewManifests(opts ...Option) (*Manifests, error) {
 		},
 		accepts:               map[string]struct{}{},
 		manifestCacheDuration: time.Minute,
-		queue:                 queue.NewWeightQueue[PathInfo](),
-		concurrency:           10,
 	}
 
 	for _, item := range c.acceptsItems {
@@ -114,26 +107,7 @@ func NewManifests(opts ...Option) (*Manifests, error) {
 	c.manifestCache = newManifestCache(c.manifestCacheDuration)
 	c.manifestCache.Start(ctx, c.logger)
 
-	for i := 0; i <= c.concurrency; i++ {
-		go c.worker(ctx)
-	}
-
 	return c, nil
-}
-
-func (c *Manifests) worker(ctx context.Context) {
-	for {
-		info, _, finish, ok := c.queue.GetOrWaitWithDone(ctx.Done())
-		if !ok {
-			return
-		}
-
-		sc, err := c.cacheManifest(&info)
-		if err != nil {
-			c.manifestCache.PutError(&info, err, sc)
-		}
-		finish()
-	}
 }
 
 func formatPathInfo(info *PathInfo) string {
@@ -167,7 +141,11 @@ func (c *Manifests) Serve(rw http.ResponseWriter, r *http.Request, info *PathInf
 				return
 			}
 		} else {
-			c.queue.AddWeight(*info, 0)
+			// Synchronously cache the manifest
+			sc, err := c.cacheManifest(info)
+			if err != nil {
+				c.manifestCache.PutError(info, err, sc)
+			}
 		}
 		if c.serveCachedManifest(rw, r, info, true, "cached") {
 			return
@@ -207,12 +185,15 @@ func (c *Manifests) Serve(rw http.ResponseWriter, r *http.Request, info *PathInf
 				}
 			}
 		} else {
-			select {
-			case <-ctx.Done():
-				utils.ServeError(rw, r, ctx.Err(), 0)
+			// Synchronously cache the manifest
+			sc, err := c.cacheManifest(info)
+			if err != nil {
+				c.logger.Warn("failed to cache manifest", "info", info, "error", err)
+				c.manifestCache.PutError(info, err, sc)
+				utils.ServeError(rw, r, err, sc)
 				return
-			case <-c.queue.AddWeight(*info, t.Weight):
 			}
+			c.logger.Info("finish caching manifest", "info", info)
 		}
 	}
 	if c.missServeCachedManifest(rw, r, info) {
