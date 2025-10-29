@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/OpenCIDN/cidn/pkg/clientset/versioned"
+	"github.com/OpenCIDN/cidn/pkg/informers/externalversions"
 	"github.com/OpenCIDN/OpenCIDN/internal/pki"
 	"github.com/OpenCIDN/OpenCIDN/internal/server"
 	"github.com/OpenCIDN/OpenCIDN/internal/signals"
@@ -27,6 +29,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/wzshiming/httpseek"
 	"github.com/wzshiming/sss"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 func main() {
@@ -304,6 +307,36 @@ func runE(ctx context.Context, flags *flagpole) error {
 
 		manifestsOpts = append(manifestsOpts, manifests.WithClient(httpClient))
 		blobsOpts = append(blobsOpts, blobs.WithClient(httpClient))
+
+		// Initialize CIDN client if kubeconfig or master is provided
+		if (flags.Kubeconfig != "" || flags.Master != "") && flags.StorageURL != "" {
+			u, err := url.Parse(flags.StorageURL)
+			if err != nil {
+				return fmt.Errorf("failed to parse storage URL: %w", err)
+			}
+			config, err := clientcmd.BuildConfigFromFlags(flags.Master, flags.Kubeconfig)
+			if err != nil {
+				return fmt.Errorf("error getting Kubernetes config: %w", err)
+			}
+			config.TLSClientConfig.Insecure = flags.InsecureSkipTLSVerify
+
+			clientset, err := versioned.NewForConfig(config)
+			if err != nil {
+				return fmt.Errorf("error creating CIDN clientset: %w", err)
+			}
+
+			logger.Info("CIDN client initialized", "destination", u.Scheme)
+
+			// Start CIDN informers
+			sharedInformerFactory := externalversions.NewSharedInformerFactory(clientset, 0)
+			blobInformer := sharedInformerFactory.Task().V1alpha1().Blobs()
+			go blobInformer.Informer().RunWithContext(ctx)
+
+			// Note: The blobs and manifests packages would need to be extended to use CIDN client
+			// For now, we just initialize it to prepare for future integration
+			_ = clientset
+			_ = blobInformer
+		}
 
 		manifest, err := manifests.NewManifests(
 			manifestsOpts...,
