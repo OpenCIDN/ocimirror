@@ -22,16 +22,18 @@ func (c *Cache) RelinkManifest(ctx context.Context, host, image, tag string, blo
 		return err
 	}
 
-	manifestLinkPath := manifestTagCachePath(host, image, tag)
-	err = c.PutContent(ctx, manifestLinkPath, []byte(blob))
-	if err != nil {
-		return fmt.Errorf("put manifest link path %s error: %w", manifestLinkPath, err)
+	if tag != "" {
+		manifestLinkPath := manifestTagCachePath(host, image, tag)
+		err = c.PutContent(ctx, manifestLinkPath, []byte(blob))
+		if err != nil {
+			return fmt.Errorf("put manifest link path %s error: %w", manifestLinkPath, err)
+		}
 	}
 
 	manifestBlobLinkPath := manifestRevisionsCachePath(host, image, blob)
 	err = c.PutContent(ctx, manifestBlobLinkPath, []byte(blob))
 	if err != nil {
-		return fmt.Errorf("put manifest revisions path %s error: %w", manifestLinkPath, err)
+		return fmt.Errorf("put manifest revisions path %s error: %w", manifestBlobLinkPath, err)
 	}
 
 	return nil
@@ -150,7 +152,7 @@ func (c *Cache) StatManifest(ctx context.Context, host, image, tagOrBlob string)
 
 	digestContent, err := c.GetContent(ctx, manifestLinkPath)
 	if err != nil {
-		return false, fmt.Errorf("get manifest link path %s error: %w", manifestLinkPath, err)
+		return false, fmt.Errorf("stat manifest link path %s error: %w", manifestLinkPath, err)
 	}
 	digest := string(digestContent)
 	stat, err := c.StatBlob(ctx, digest)
@@ -166,7 +168,7 @@ func (c *Cache) StatOrRelinkManifest(ctx context.Context, host, image, tag strin
 
 	digestContent, err := c.GetContent(ctx, manifestLinkPath)
 	if err != nil {
-		return false, fmt.Errorf("get manifest link path %s error: %w", manifestLinkPath, err)
+		return false, fmt.Errorf("stat or relink manifest link path %s error: %w", manifestLinkPath, err)
 	}
 	digest := string(digestContent)
 	stat, err := c.StatBlob(ctx, digest)
