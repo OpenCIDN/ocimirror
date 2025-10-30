@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/OpenCIDN/OpenCIDN/internal/slices"
-	"github.com/OpenCIDN/OpenCIDN/pkg/auth/model"
-	"github.com/OpenCIDN/OpenCIDN/pkg/auth/service"
+	"github.com/OpenCIDN/ocimirror/internal/slices"
+	"github.com/OpenCIDN/ocimirror/pkg/auth/model"
+	"github.com/OpenCIDN/ocimirror/pkg/auth/service"
 	"github.com/emicklei/go-restful/v3"
 )
 

@@ -8,11 +8,11 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/OpenCIDN/OpenCIDN/internal/throttled"
-	"github.com/OpenCIDN/OpenCIDN/internal/utils"
-	"github.com/OpenCIDN/OpenCIDN/pkg/blobs"
-	"github.com/OpenCIDN/OpenCIDN/pkg/manifests"
-	"github.com/OpenCIDN/OpenCIDN/pkg/token"
+	"github.com/OpenCIDN/ocimirror/internal/throttled"
+	"github.com/OpenCIDN/ocimirror/internal/utils"
+	"github.com/OpenCIDN/ocimirror/pkg/blobs"
+	"github.com/OpenCIDN/ocimirror/pkg/manifests"
+	"github.com/OpenCIDN/ocimirror/pkg/token"
 	"github.com/docker/distribution/registry/api/errcode"
 	"golang.org/x/time/rate"
 )

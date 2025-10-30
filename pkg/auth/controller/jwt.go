@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/OpenCIDN/OpenCIDN/pkg/signing"
+	"github.com/OpenCIDN/ocimirror/pkg/signing"
 	"github.com/emicklei/go-restful/v3"
 )
 

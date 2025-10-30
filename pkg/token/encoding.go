@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/OpenCIDN/OpenCIDN/pkg/signing"
+	"github.com/OpenCIDN/ocimirror/pkg/signing"
 )
 
 type Encoder struct {

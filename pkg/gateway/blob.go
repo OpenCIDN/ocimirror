@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/OpenCIDN/OpenCIDN/pkg/blobs"
-	"github.com/OpenCIDN/OpenCIDN/pkg/token"
+	"github.com/OpenCIDN/ocimirror/pkg/blobs"
+	"github.com/OpenCIDN/ocimirror/pkg/token"
 )
 
 func (c *Gateway) blob(rw http.ResponseWriter, r *http.Request, info *PathInfo, t *token.Token, authData string) {

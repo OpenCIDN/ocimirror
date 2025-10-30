@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/OpenCIDN/OpenCIDN/internal/utils"
+	"github.com/OpenCIDN/ocimirror/internal/utils"
 	"github.com/docker/distribution/registry/api/errcode"
 )
 

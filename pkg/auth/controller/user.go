@@ -4,7 +4,7 @@ import (
 	"crypto/rsa"
 	"net/http"
 
-	"github.com/OpenCIDN/OpenCIDN/pkg/auth/service"
+	"github.com/OpenCIDN/ocimirror/pkg/auth/service"
 	"github.com/emicklei/go-restful/v3"
 )
 

@@ -3,8 +3,8 @@ package gateway
 import (
 	"net/http"
 
-	"github.com/OpenCIDN/OpenCIDN/pkg/manifests"
-	"github.com/OpenCIDN/OpenCIDN/pkg/token"
+	"github.com/OpenCIDN/ocimirror/pkg/manifests"
+	"github.com/OpenCIDN/ocimirror/pkg/token"
 )
 
 func (c *Gateway) manifest(rw http.ResponseWriter, r *http.Request, info *PathInfo, t *token.Token) {

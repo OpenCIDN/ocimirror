@@ -1,4 +1,4 @@
-module github.com/OpenCIDN/OpenCIDN
+module github.com/OpenCIDN/ocimirror
 
 go 1.24.7
 

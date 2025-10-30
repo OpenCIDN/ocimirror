@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/OpenCIDN/OpenCIDN/pkg/auth/model"
+	"github.com/OpenCIDN/ocimirror/pkg/auth/model"
 )
 
 type Login struct{}

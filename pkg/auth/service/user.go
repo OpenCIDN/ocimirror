@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/OpenCIDN/OpenCIDN/pkg/auth/dao"
-	"github.com/OpenCIDN/OpenCIDN/pkg/auth/model"
+	"github.com/OpenCIDN/ocimirror/pkg/auth/dao"
+	"github.com/OpenCIDN/ocimirror/pkg/auth/model"
 )
 
 type UserService struct {

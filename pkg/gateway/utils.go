@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/OpenCIDN/OpenCIDN/internal/format"
+	"github.com/OpenCIDN/ocimirror/internal/format"
 )
 
 func addPrefixToImageForPagination(oldLink string, host string) string {

@@ -6,9 +6,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/OpenCIDN/OpenCIDN/internal/slices"
-	"github.com/OpenCIDN/OpenCIDN/pkg/auth/dao"
-	"github.com/OpenCIDN/OpenCIDN/pkg/auth/model"
+	"github.com/OpenCIDN/ocimirror/internal/slices"
+	"github.com/OpenCIDN/ocimirror/pkg/auth/dao"
+	"github.com/OpenCIDN/ocimirror/pkg/auth/model"
 )
 
 type RegistryService struct {

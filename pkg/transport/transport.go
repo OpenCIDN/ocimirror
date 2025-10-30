@@ -8,7 +8,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/OpenCIDN/OpenCIDN/internal/maps"
+	"github.com/OpenCIDN/ocimirror/internal/maps"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"

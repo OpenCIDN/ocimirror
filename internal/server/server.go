@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"time"
 
-	"github.com/OpenCIDN/OpenCIDN/internal/acme"
+	"github.com/OpenCIDN/ocimirror/internal/acme"
 	"github.com/wzshiming/cmux"
 	"github.com/wzshiming/cmux/pattern"
 )

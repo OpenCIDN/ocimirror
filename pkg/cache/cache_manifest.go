@@ -11,7 +11,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/OpenCIDN/OpenCIDN/internal/slices"
+	"github.com/OpenCIDN/ocimirror/internal/slices"
 )
 
 func (c *Cache) RelinkManifest(ctx context.Context, host, image, tag string, blob string) error {

@@ -13,12 +13,12 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 
-	"github.com/OpenCIDN/OpenCIDN/internal/pki"
-	"github.com/OpenCIDN/OpenCIDN/internal/server"
-	"github.com/OpenCIDN/OpenCIDN/internal/signals"
-	"github.com/OpenCIDN/OpenCIDN/pkg/auth"
-	"github.com/OpenCIDN/OpenCIDN/pkg/signing"
-	"github.com/OpenCIDN/OpenCIDN/pkg/token"
+	"github.com/OpenCIDN/ocimirror/internal/pki"
+	"github.com/OpenCIDN/ocimirror/internal/server"
+	"github.com/OpenCIDN/ocimirror/internal/signals"
+	"github.com/OpenCIDN/ocimirror/pkg/auth"
+	"github.com/OpenCIDN/ocimirror/pkg/signing"
+	"github.com/OpenCIDN/ocimirror/pkg/token"
 	"github.com/emicklei/go-restful/v3"
 	"github.com/gorilla/handlers"
 	"github.com/spf13/cobra"

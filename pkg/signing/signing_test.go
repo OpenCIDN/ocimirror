@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/OpenCIDN/OpenCIDN/internal/pki"
+	"github.com/OpenCIDN/ocimirror/internal/pki"
 )
 
 func TestSigning(t *testing.T) {
