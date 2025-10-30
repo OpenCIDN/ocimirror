@@ -1,0 +1,124 @@
+services:
+  minio:
+    restart: unless-stopped
+    stop_signal: SIGINT
+    stop_grace_period: 3s
+    image: m.daocloud.io/quay.io/minio/minio:RELEASE.2025-05-24T17-08-30Z
+    entrypoint:
+    - sh
+    command:
+    - -c
+    - |-
+      (
+        while true; do
+            mc alias set local http://127.0.0.1:9000 minioadmin minioadmin && break
+            sleep 2
+        done
+
+        mc mb local/cidn-test-bucket
+      ) &
+      /usr/bin/docker-entrypoint.sh server /data/$${HOSTNAME}
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+    - "9000:9000"
+
+  etcd:
+    restart: unless-stopped
+    stop_signal: SIGINT
+    stop_grace_period: 3s
+    image: m.daocloud.io/quay.io/coreos/etcd:v3.6.1
+    command:
+    - /usr/local/bin/etcd
+    - --name=node0
+    - --auto-compaction-retention=1
+    - --quota-backend-bytes=8589934592
+    - --data-dir=/var/lib/etcd
+    - --initial-advertise-peer-urls=http://0.0.0.0:2380
+    - --listen-peer-urls=http://0.0.0.0:2380
+    - --advertise-client-urls=http://0.0.0.0:2379
+    - --listen-client-urls=http://0.0.0.0:2379
+    - --initial-cluster=node0=http://0.0.0.0:2380
+
+  apiserver:
+    restart: unless-stopped
+    stop_signal: SIGINT
+    stop_grace_period: 3s
+    image: m.daocloud.io/ghcr.io/opencidn/cidn/apiserver:v0.0.24
+    depends_on:
+      etcd:
+        condition: service_started
+        restart: true
+    command:
+    - --etcd-servers=http://etcd:2379
+    - --user=admin:admin-pwd,cidn:controller-manager
+    - --user=runner:runner-pwd,cidn:runner
+    - --user=viewer:viewer-pwd,cidn:viewer
+    ports:
+    - "6443:6443"
+
+  controller-manager:
+    restart: unless-stopped
+    stop_signal: SIGINT
+    stop_grace_period: 10s
+    image: m.daocloud.io/ghcr.io/opencidn/cidn/controller-manager:v0.0.24
+    depends_on:
+      apiserver:
+        condition: service_started
+        restart: true
+    command:
+    - --master=https://admin:admin-pwd@apiserver:6443
+    - --insecure-skip-tls-verify
+    - --storage-url=sss://minioadmin:minioadmin@cidn-test-bucket.us-east-1?forcepathstyle=true&secure=false&chunksize=104857600&regionendpoint=http://minio:9000
+
+  runner:
+    restart: unless-stopped
+    stop_signal: SIGINT
+    stop_grace_period: 10s
+    image: m.daocloud.io/ghcr.io/opencidn/cidn/runner:v0.0.24
+    depends_on:
+      apiserver:
+        condition: service_started
+        restart: true
+      minio:
+        condition: service_started
+        restart: true
+    command:
+    - --master=https://runner:runner-pwd@apiserver:6443
+    - --insecure-skip-tls-verify
+
+  webui:
+    restart: unless-stopped
+    image: m.daocloud.io/ghcr.io/opencidn/cidn/webui:v0.0.24
+    depends_on:
+      apiserver:
+        condition: service_started
+        restart: true
+    command:
+    - --master=https://viewer:viewer-pwd@apiserver:6443
+    - --insecure-skip-tls-verify
+    - --port=8080
+    ports:
+    - "8080:8080"
+
+
+  gateway:
+    container_name: gateway
+    depends_on:
+      minio:
+        condition: service_started
+      apiserver:
+        condition: service_started
+    build:
+      context: ../..
+      dockerfile: ./images/gateway/Dockerfile
+    ports:
+    - 8000:8000
+    command:
+    - --address=:8000
+    - --default-registry=docker.io
+    - --storage-url=sss://minioadmin:minioadmin@cidn-test-bucket.us-east-1?forcepathstyle=true&secure=false&chunksize=104857600&regionendpoint=http://minio:9000
+    - --link-expires=1m
+    - --master=https://admin:admin-pwd@apiserver:6443
+    - --insecure-skip-tls-verify

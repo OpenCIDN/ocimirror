@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -17,12 +18,16 @@ import (
 	"github.com/OpenCIDN/OpenCIDN/internal/throttled"
 	"github.com/OpenCIDN/OpenCIDN/internal/utils"
 	"github.com/OpenCIDN/OpenCIDN/pkg/cache"
-	"github.com/OpenCIDN/OpenCIDN/pkg/queue/client"
-	"github.com/OpenCIDN/OpenCIDN/pkg/queue/model"
 	"github.com/OpenCIDN/OpenCIDN/pkg/token"
+	"github.com/OpenCIDN/cidn/pkg/apis/task/v1alpha1"
+	"github.com/OpenCIDN/cidn/pkg/clientset/versioned"
+	informers "github.com/OpenCIDN/cidn/pkg/informers/externalversions/task/v1alpha1"
 	"github.com/docker/distribution/registry/api/errcode"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	"golang.org/x/time/rate"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8scache "k8s.io/client-go/tools/cache"
 )
 
 var (
@@ -52,7 +57,9 @@ type Blobs struct {
 	blobNoRedirectLimit *rate.Limiter
 	forceBlobNoRedirect bool
 
-	queueClient *client.MessageClient
+	cidnClient       versioned.Interface
+	cidnBlobInformer informers.BlobInformer
+	cidnDestination  string
 }
 
 type Option func(c *Blobs) error
@@ -128,9 +135,11 @@ func WithBlobCacheDuration(blobCacheDuration time.Duration) Option {
 	}
 }
 
-func WithQueueClient(queueClient *client.MessageClient) Option {
+func WithCIDNClient(cidnClient versioned.Interface, blobInformer informers.BlobInformer, destination string) Option {
 	return func(c *Blobs) error {
-		c.queueClient = queueClient
+		c.cidnClient = cidnClient
+		c.cidnBlobInformer = blobInformer
+		c.cidnDestination = destination
 		return nil
 	}
 }
@@ -285,32 +294,31 @@ func (b *Blobs) serveCache(rw http.ResponseWriter, r *http.Request, info *BlobIn
 }
 
 func (b *Blobs) Serve(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t *token.Token) {
-	ctx := r.Context()
-
 	if b.serveCache(rw, r, info, t) {
 		return
 	}
 
-	if b.queueClient != nil {
-		err := b.waitingQueue(ctx, info.Blobs, t.Weight, info)
+	// Use CIDN for blob syncing if configured
+	if b.cidnClient != nil {
+		err := b.cacheBlobWithCIDN(r.Context(), info)
 		if err != nil {
 			errStr := err.Error()
-			if strings.Contains(errStr, "status code 404") {
+			if strings.Contains(errStr, "status code: got 404") {
 				utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
 				return
-			} else if strings.Contains(errStr, "status code 403") {
+			} else if strings.Contains(errStr, "status code: got 403") {
 				utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
 				return
-			} else if strings.Contains(errStr, "status code 401") {
+			} else if strings.Contains(errStr, "status code: got 401") {
 				utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
 				return
 			}
-			b.logger.Warn("failed to wait queue message", "error", err)
+			b.logger.Warn("failed to sync blob with CIDN", "error", err)
 			utils.ServeError(rw, r, errcode.ErrorCodeUnknown, 0)
 			return
 		}
 	} else {
-		// Synchronously cache the blob
+		// Synchronously cache the blob on first request
 		sc, err := b.cacheBlob(info)
 		if err != nil {
 			b.logger.Warn("failed download file", "info", info, "error", err)
@@ -431,6 +439,126 @@ func (b *Blobs) cacheBlob(info *BlobInfo) (int, error) {
 	return 0, nil
 }
 
+func (b *Blobs) cacheBlobWithCIDN(ctx context.Context, info *BlobInfo) error {
+	sourceURL := fmt.Sprintf("https://%s/v2/%s/blobs/%s", info.Host, info.Image, info.Blobs)
+	cachePath := blobCachePath(info.Blobs)
+
+	blobName := info.Blobs
+	blobs := b.cidnClient.TaskV1alpha1().Blobs()
+
+	blob, err := b.cidnBlobInformer.Lister().Get(blobName)
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			b.logger.Warn("error getting blob from informer", "error", err)
+			return err
+		}
+
+		displayName := fmt.Sprintf("%s/%s@%s", info.Host, info.Image, info.Blobs)
+
+		blob, err = blobs.Create(ctx, &v1alpha1.Blob{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: blobName,
+				Annotations: map[string]string{
+					v1alpha1.BlobDisplayNameAnnotation: displayName,
+				},
+			},
+			Spec: v1alpha1.BlobSpec{
+				MaximumRunning:   3,
+				MinimumChunkSize: 128 * 1024 * 1024,
+				Source: []v1alpha1.BlobSource{
+					{
+						URL:        sourceURL,
+						BearerName: fmt.Sprintf("%s:%s", info.Host, strings.ReplaceAll(info.Image, "/", ":")),
+					},
+				},
+				Destination: []v1alpha1.BlobDestination{
+					{
+						Name:         b.cidnDestination,
+						Path:         cachePath,
+						SkipIfExists: true,
+					},
+				},
+				ContentSha256: cleanDigest(info.Blobs),
+			},
+		}, metav1.CreateOptions{})
+		if err != nil && !apierrors.IsAlreadyExists(err) {
+			return err
+		}
+	} else {
+		switch blob.Status.Phase {
+		case v1alpha1.BlobPhaseSucceeded:
+			return nil
+		case v1alpha1.BlobPhaseFailed:
+			errorMsg := "blob sync failed"
+			for _, condition := range blob.Status.Conditions {
+				if condition.Message != "" {
+					errorMsg = condition.Message
+					break
+				}
+			}
+			return fmt.Errorf("CIDN blob sync failed: %s", errorMsg)
+		}
+	}
+
+	// Create a channel to receive blob status updates
+	statusChan := make(chan *v1alpha1.Blob, 1)
+	defer close(statusChan)
+
+	// Add event handler to watch for blob status changes
+	handler := k8scache.ResourceEventHandlerFuncs{
+		UpdateFunc: func(oldObj, newObj interface{}) {
+			newBlob, ok := newObj.(*v1alpha1.Blob)
+			if !ok {
+				return
+			}
+			if newBlob.Name == blobName {
+				select {
+				case statusChan <- newBlob:
+				default:
+				}
+			}
+		},
+	}
+
+	registration, err := b.cidnBlobInformer.Informer().AddEventHandler(handler)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = b.cidnBlobInformer.Informer().RemoveEventHandler(registration)
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case blob := <-statusChan:
+			switch blob.Status.Phase {
+			case v1alpha1.BlobPhaseSucceeded:
+				return nil
+			case v1alpha1.BlobPhaseFailed:
+				errorMsg := "blob sync failed"
+				for _, condition := range blob.Status.Conditions {
+					if condition.Message != "" {
+						errorMsg = condition.Message
+						break
+					}
+				}
+				return fmt.Errorf("CIDN blob sync failed: %s", errorMsg)
+			}
+		}
+	}
+}
+
+func cleanDigest(blob string) string {
+	return strings.TrimPrefix(blob, "sha256:")
+}
+
+func blobCachePath(blob string) string {
+	blob = cleanDigest(blob)
+	return path.Join("/docker/registry/v2/blobs/sha256", blob[:2], blob, "data")
+}
+
 func (b *Blobs) serveCachedBlobHead(rw http.ResponseWriter, r *http.Request, size int64) bool {
 	if size != 0 && r.Method == http.MethodHead {
 		rw.Header().Set("Content-Length", strconv.FormatInt(size, 10))
@@ -542,56 +670,4 @@ func (b *Blobs) serveCachedBlobRedirect(rw http.ResponseWriter, r *http.Request,
 
 	b.logger.Info("Cache hit", "digest", info.Blobs, "url", u)
 	http.Redirect(rw, r, u, http.StatusTemporaryRedirect)
-}
-
-func (b *Blobs) waitingQueue(ctx context.Context, msg string, weight int, info *BlobInfo) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	mr, err := b.queueClient.Create(ctx, msg, weight+1, model.MessageAttr{
-		Kind:  model.KindBlob,
-		Host:  info.Host,
-		Image: info.Image,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create queue: %w", err)
-	}
-
-	if mr.Status == model.StatusPending || mr.Status == model.StatusProcessing {
-		b.logger.Info("watching message from queue", "msg", msg)
-
-		chMr, err := b.queueClient.Watch(ctx, mr.MessageID)
-		if err != nil {
-			return fmt.Errorf("failed to watch message: %w", err)
-		}
-	watiQueue:
-		for {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case m, ok := <-chMr:
-				if !ok {
-					time.Sleep(1 * time.Second)
-					chMr, err = b.queueClient.Watch(ctx, mr.MessageID)
-					if err != nil {
-						return fmt.Errorf("failed to re-watch message: %w", err)
-					}
-				} else {
-					mr = m
-					if mr.Status != model.StatusPending && mr.Status != model.StatusProcessing {
-						break watiQueue
-					}
-				}
-			}
-		}
-	}
-
-	switch mr.Status {
-	case model.StatusCompleted:
-		return nil
-	case model.StatusFailed:
-		return fmt.Errorf("%q Queue Error: %s", msg, mr.Data.Error)
-	default:
-		return fmt.Errorf("unexpected status %d for message %q", mr.Status, msg)
-	}
 }

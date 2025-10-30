@@ -15,14 +15,16 @@ import (
 	"github.com/OpenCIDN/OpenCIDN/internal/signals"
 	"github.com/OpenCIDN/OpenCIDN/pkg/blobs"
 	"github.com/OpenCIDN/OpenCIDN/pkg/cache"
-	"github.com/OpenCIDN/OpenCIDN/pkg/queue/client"
 	"github.com/OpenCIDN/OpenCIDN/pkg/signing"
 	"github.com/OpenCIDN/OpenCIDN/pkg/token"
 	"github.com/OpenCIDN/OpenCIDN/pkg/transport"
+	"github.com/OpenCIDN/cidn/pkg/clientset/versioned"
+	"github.com/OpenCIDN/cidn/pkg/informers/externalversions"
 	"github.com/gorilla/handlers"
 	"github.com/spf13/cobra"
 	"github.com/wzshiming/httpseek"
 	"github.com/wzshiming/sss"
+	"k8s.io/client-go/tools/clientcmd"
 )
 
 func main() {
@@ -62,8 +64,9 @@ type flagpole struct {
 	BlobCacheDuration              time.Duration
 	ForceBlobNoRedirect            bool
 
-	QueueURL   string
-	QueueToken string
+	Kubeconfig            string
+	Master                string
+	InsecureSkipTLSVerify bool
 }
 
 func NewCommand() *cobra.Command {
@@ -108,8 +111,9 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().DurationVar(&flags.BlobCacheDuration, "blob-cache-duration", flags.BlobCacheDuration, "Blob cache duration")
 	cmd.Flags().BoolVar(&flags.ForceBlobNoRedirect, "force-blob-no-redirect", flags.ForceBlobNoRedirect, "Force blob no redirect")
 
-	cmd.Flags().StringVar(&flags.QueueToken, "queue-token", flags.QueueToken, "Queue token")
-	cmd.Flags().StringVar(&flags.QueueURL, "queue-url", flags.QueueURL, "Queue URL")
+	cmd.Flags().StringVar(&flags.Kubeconfig, "kubeconfig", flags.Kubeconfig, "Path to the kubeconfig file to use")
+	cmd.Flags().StringVar(&flags.Master, "master", flags.Master, "The address of the Kubernetes API server")
+	cmd.Flags().BoolVar(&flags.InsecureSkipTLSVerify, "insecure-skip-tls-verify", false, "If true, the server's certificate will not be checked for validity. This will make your HTTPS connections insecure")
 
 	return cmd
 }
@@ -176,9 +180,30 @@ func runE(ctx context.Context, flags *flagpole) error {
 		blobsOpts = append(blobsOpts, blobs.WithBigCache(bigsdcache, flags.BigStorageSize))
 	}
 
-	if flags.QueueURL != "" {
-		queueClient := client.NewMessageClient(http.DefaultClient, flags.QueueURL, flags.QueueToken)
-		blobsOpts = append(blobsOpts, blobs.WithQueueClient(queueClient))
+	if flags.Kubeconfig != "" || flags.Master != "" {
+		if flags.StorageURL == "" {
+			return fmt.Errorf("--storage-url is required when using CIDN")
+		}
+		u, err := url.Parse(flags.StorageURL)
+		if err != nil {
+			return fmt.Errorf("failed to parse storage URL: %w", err)
+		}
+		config, err := clientcmd.BuildConfigFromFlags(flags.Master, flags.Kubeconfig)
+		if err != nil {
+			return fmt.Errorf("error getting config: %w", err)
+		}
+		config.TLSClientConfig.Insecure = flags.InsecureSkipTLSVerify
+
+		clientset, err := versioned.NewForConfig(config)
+		if err != nil {
+			return fmt.Errorf("error creating clientset: %w", err)
+		}
+
+		sharedInformerFactory := externalversions.NewSharedInformerFactory(clientset, 0)
+		blobInformer := sharedInformerFactory.Task().V1alpha1().Blobs()
+		go blobInformer.Informer().RunWithContext(ctx)
+
+		blobsOpts = append(blobsOpts, blobs.WithCIDNClient(clientset, blobInformer, u.Scheme))
 	}
 
 	if flags.TokenPublicKeyFile != "" {
