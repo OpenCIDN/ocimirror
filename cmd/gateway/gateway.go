@@ -123,7 +123,7 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&flags.ReadmeURL, "readme-url", flags.ReadmeURL, "Readme url")
 
 	cmd.Flags().DurationVar(&flags.BlobCacheDuration, "blob-cache-duration", flags.BlobCacheDuration, "Blob cache duration")
-	cmd.Flags().BoolVar(&flags.NoRedirect, "no-redirect", flags.NoRedirect, "No redirect")
+	cmd.Flags().BoolVar(&flags.NoRedirect, "no-redirect", flags.NoRedirect, "Disable blob redirects and serve blobs directly")
 
 	cmd.Flags().StringVar(&flags.DefaultRegistry, "default-registry", flags.DefaultRegistry, "default registry used for non full-path docker pull, like:docker.io")
 	cmd.Flags().StringToStringVar(&flags.OverrideDefaultRegistry, "override-default-registry", flags.OverrideDefaultRegistry, "override default registry")

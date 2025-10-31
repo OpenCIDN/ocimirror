@@ -100,7 +100,7 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&flags.TokenURL, "token-url", flags.TokenURL, "Token url")
 
 	cmd.Flags().DurationVar(&flags.BlobCacheDuration, "blob-cache-duration", flags.BlobCacheDuration, "Blob cache duration")
-	cmd.Flags().BoolVar(&flags.NoRedirect, "no-redirect", flags.NoRedirect, "No redirect")
+	cmd.Flags().BoolVar(&flags.NoRedirect, "no-redirect", flags.NoRedirect, "Disable blob redirects and serve blobs directly")
 
 	cmd.Flags().StringVar(&flags.Kubeconfig, "kubeconfig", flags.Kubeconfig, "Path to the kubeconfig file to use")
 	cmd.Flags().StringVar(&flags.Master, "master", flags.Master, "The address of the Kubernetes API server")
