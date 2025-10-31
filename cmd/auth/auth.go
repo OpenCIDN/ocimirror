@@ -65,8 +65,9 @@ func NewCommand() *cobra.Command {
 	}
 
 	cmd := &cobra.Command{
-		Use:   "auth",
-		Short: "Auth",
+		Use:        "auth",
+		Short:      "Auth",
+		Deprecated: "Use 'ocimirror auth' instead. This standalone binary will be removed in a future release.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runE(cmd.Context(), flags)
 		},

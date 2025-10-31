@@ -75,8 +75,9 @@ func NewCommand() *cobra.Command {
 	}
 
 	cmd := &cobra.Command{
-		Use:   "blobs",
-		Short: "Blobs",
+		Use:        "blobs",
+		Short:      "Blobs",
+		Deprecated: "Use 'ocimirror agent' instead. This standalone binary will be removed in a future release.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runE(cmd.Context(), flags)
 		},
