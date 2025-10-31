@@ -7,10 +7,10 @@ COPY . .
 
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
-    CGO_ENABLED=0 go build -o gateway ./cmd/gateway
+    CGO_ENABLED=0 go build -o ocimirror ./cmd/ocimirror
 
 FROM m.daocloud.io/docker.io/library/alpine:3.22
 WORKDIR /
-COPY --from=builder /workspace/gateway .
+COPY --from=builder /workspace/ocimirror .
 
-ENTRYPOINT ["/gateway"]
+ENTRYPOINT ["/ocimirror", "gateway"]
