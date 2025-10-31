@@ -42,9 +42,6 @@ func main() {
 }
 
 type flagpole struct {
-	BigStorageURL  string
-	BigStorageSize int
-
 	StorageURL    string
 	RedirectLinks string
 	LinkExpires   time.Duration
@@ -103,8 +100,6 @@ func NewCommand() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&flags.StorageURL, "storage-url", flags.StorageURL, "Storage driver url")
-	cmd.Flags().StringVar(&flags.BigStorageURL, "big-storage-url", flags.BigStorageURL, "Big storage driver url")
-	cmd.Flags().IntVar(&flags.BigStorageSize, "big-storage-size", flags.BigStorageSize, "Big storage size")
 	cmd.Flags().StringVar(&flags.RedirectLinks, "redirect-links", flags.RedirectLinks, "Redirect links")
 	cmd.Flags().DurationVar(&flags.LinkExpires, "link-expires", flags.LinkExpires, "Link expires")
 	cmd.Flags().BoolVar(&flags.SignLink, "sign-link", flags.SignLink, "Sign Link")
@@ -284,26 +279,6 @@ func runE(ctx context.Context, flags *flagpole) error {
 		blobsOpts = append(blobsOpts,
 			blobs.WithCache(sdcache),
 		)
-
-		if flags.BigStorageURL != "" && flags.BigStorageSize > 0 {
-			bigCacheOpts := []cache.Option{}
-			sd, err := sss.NewSSS(sss.WithURL(flags.BigStorageURL))
-			if err != nil {
-				return fmt.Errorf("create storage driver failed: %w", err)
-			}
-			bigCacheOpts = append(bigCacheOpts,
-				cache.WithSignLink(flags.SignLink),
-				cache.WithStorageDriver(sd),
-			)
-			if flags.LinkExpires > 0 {
-				bigCacheOpts = append(bigCacheOpts, cache.WithLinkExpires(flags.LinkExpires))
-			}
-			bigsdcache, err := cache.NewCache(bigCacheOpts...)
-			if err != nil {
-				return fmt.Errorf("create cache failed: %w", err)
-			}
-			blobsOpts = append(blobsOpts, blobs.WithBigCache(bigsdcache, flags.BigStorageSize))
-		}
 
 		if flags.Kubeconfig != "" || flags.Master != "" {
 			if flags.StorageURL == "" {
