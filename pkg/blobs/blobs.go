@@ -50,9 +50,7 @@ type Blobs struct {
 	blobCache         *blobsCache
 	authenticator     *token.Authenticator
 
-	blobNoRedirectSize  int
-	blobNoRedirectLimit *rate.Limiter
-	forceBlobNoRedirect bool
+	noRedirect bool
 
 	cidnClient       versioned.Interface
 	cidnBlobInformer informers.BlobInformer
@@ -89,27 +87,9 @@ func WithClient(client *http.Client) Option {
 	}
 }
 
-func WithForceBlobNoRedirect(forceBlobNoRedirect bool) Option {
+func WithNoRedirect(noRedirect bool) Option {
 	return func(c *Blobs) error {
-		c.forceBlobNoRedirect = forceBlobNoRedirect
-		return nil
-	}
-}
-
-func WithBlobNoRedirectSize(blobNoRedirectSize int) Option {
-	return func(c *Blobs) error {
-		c.blobNoRedirectSize = blobNoRedirectSize
-		return nil
-	}
-}
-
-func WithBlobNoRedirectMaxSizePerSecond(blobNoRedirectMaxSizePerSecond int) Option {
-	return func(c *Blobs) error {
-		if blobNoRedirectMaxSizePerSecond > 0 {
-			c.blobNoRedirectLimit = rate.NewLimiter(rate.Limit(blobNoRedirectMaxSizePerSecond), 32*1024)
-		} else {
-			c.blobNoRedirectLimit = nil
-		}
+		c.noRedirect = noRedirect
 		return nil
 	}
 }
@@ -516,23 +496,9 @@ func (b *Blobs) serveCachedBlob(rw http.ResponseWriter, r *http.Request, info *B
 		return
 	}
 
-	if b.forceBlobNoRedirect {
-		if b.blobNoRedirectLimit != nil {
-			err := b.blobNoRedirectLimit.Wait(r.Context())
-			if err != nil {
-				b.logger.Info("failed to wait limit", "error", err)
-				return
-			}
-		}
+	if b.noRedirect {
 		b.serveCachedBlobDirect(rw, r, info, t, modTime, size)
 		return
-	}
-
-	if size < int64(b.blobNoRedirectSize) {
-		if b.blobNoRedirectLimit != nil && b.blobNoRedirectLimit.Allow() {
-			b.serveCachedBlobDirect(rw, r, info, t, modTime, size)
-			return
-		}
 	}
 
 	b.serveCachedBlobRedirect(rw, r, info, t, modTime, size)
@@ -553,10 +519,6 @@ func (b *Blobs) serveCachedBlobDirect(rw http.ResponseWriter, r *http.Request, i
 		if t.RateLimitPerSecond > 0 {
 			limit := rate.NewLimiter(rate.Limit(t.RateLimitPerSecond), 16*1024)
 			body = throttled.NewThrottledReader(ctx, body, limit)
-		}
-
-		if b.blobNoRedirectLimit != nil {
-			body = throttled.NewThrottledReader(ctx, body, b.blobNoRedirectLimit)
 		}
 
 		return struct {
