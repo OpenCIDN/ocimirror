@@ -25,6 +25,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8scache "k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/util/retry"
 )
 
 type Manifests struct {
@@ -394,28 +395,35 @@ func (c *Manifests) requestWithCIDN(ctx context.Context, info *PathInfo, method 
 			return nil, fmt.Errorf("get chunk from informer error: %w", err)
 		}
 
-		chunk, err = chunks.Create(ctx, &v1alpha1.Chunk{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: chunkName,
-			},
-			Spec: v1alpha1.ChunkSpec{
-				MaximumRetry: 3,
-				Source: v1alpha1.ChunkHTTP{
-					Request: v1alpha1.ChunkHTTPRequest{
-						Method: method,
-						URL:    url,
-						Headers: map[string]string{
-							"Accept": c.acceptsStr,
+		// Use retry logic to handle conflicts when creating the Chunk CR
+		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			chunk, err = chunks.Create(ctx, &v1alpha1.Chunk{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: chunkName,
+				},
+				Spec: v1alpha1.ChunkSpec{
+					MaximumRetry: 3,
+					Source: v1alpha1.ChunkHTTP{
+						Request: v1alpha1.ChunkHTTPRequest{
+							Method: method,
+							URL:    url,
+							Headers: map[string]string{
+								"Accept": c.acceptsStr,
+							},
+						},
+						Response: v1alpha1.ChunkHTTPResponse{
+							StatusCode: http.StatusOK,
 						},
 					},
-					Response: v1alpha1.ChunkHTTPResponse{
-						StatusCode: http.StatusOK,
-					},
+					BearerName: fmt.Sprintf("%s:%s", info.Host, strings.ReplaceAll(info.Image, "/", ":")),
 				},
-				BearerName: fmt.Sprintf("%s:%s", info.Host, strings.ReplaceAll(info.Image, "/", ":")),
-			},
-		}, metav1.CreateOptions{})
-		if err != nil && !apierrors.IsAlreadyExists(err) {
+			}, metav1.CreateOptions{})
+			if err != nil && !apierrors.IsAlreadyExists(err) {
+				return err
+			}
+			return nil
+		})
+		if err != nil {
 			return nil, fmt.Errorf("create chunk error: %w", err)
 		}
 
@@ -518,33 +526,40 @@ func (c *Manifests) cacheBlobWithCIDN(ctx context.Context, info *PathInfo) error
 
 		displayName := fmt.Sprintf("%s/%s@%s", info.Host, info.Image, info.Manifests)
 
-		blob, err = blobs.Create(ctx, &v1alpha1.Blob{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: blobName,
-				Annotations: map[string]string{
-					v1alpha1.BlobDisplayNameAnnotation: displayName,
-				},
-			},
-			Spec: v1alpha1.BlobSpec{
-				MaximumRunning: 1,
-				ChunksNumber:   1,
-				Source: []v1alpha1.BlobSource{
-					{
-						URL:        sourceURL,
-						BearerName: fmt.Sprintf("%s:%s", info.Host, strings.ReplaceAll(info.Image, "/", ":")),
+		// Use retry logic to handle conflicts when creating the Blob CR
+		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			blob, err = blobs.Create(ctx, &v1alpha1.Blob{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: blobName,
+					Annotations: map[string]string{
+						v1alpha1.BlobDisplayNameAnnotation: displayName,
 					},
 				},
-				Destination: []v1alpha1.BlobDestination{
-					{
-						Name:         c.cidnDestination,
-						Path:         cachePath,
-						SkipIfExists: true,
+				Spec: v1alpha1.BlobSpec{
+					MaximumRunning: 1,
+					ChunksNumber:   1,
+					Source: []v1alpha1.BlobSource{
+						{
+							URL:        sourceURL,
+							BearerName: fmt.Sprintf("%s:%s", info.Host, strings.ReplaceAll(info.Image, "/", ":")),
+						},
 					},
+					Destination: []v1alpha1.BlobDestination{
+						{
+							Name:         c.cidnDestination,
+							Path:         cachePath,
+							SkipIfExists: true,
+						},
+					},
+					ContentSha256: cleanDigest(info.Manifests),
 				},
-				ContentSha256: cleanDigest(info.Manifests),
-			},
-		}, metav1.CreateOptions{})
-		if err != nil && !apierrors.IsAlreadyExists(err) {
+			}, metav1.CreateOptions{})
+			if err != nil && !apierrors.IsAlreadyExists(err) {
+				return err
+			}
+			return nil
+		})
+		if err != nil {
 			return fmt.Errorf("create blob error: %w", err)
 		}
 	} else {
