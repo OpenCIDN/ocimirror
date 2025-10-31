@@ -203,9 +203,35 @@ func (b *Blobs) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	b.Serve(rw, r, info, &t)
 }
 
+func (b *Blobs) serveBlobFromStorage(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t *token.Token, modTime time.Time, size int64) bool {
+	if b.serveCachedBlobHead(rw, r, size) {
+		return true
+	}
+
+	b.serveCachedBlob(rw, r, info, t, modTime, size)
+	return true
+}
+
 func (b *Blobs) serveCache(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t *token.Token) bool {
 	ctx := r.Context()
 
+	// When CIDN is configured, use the CIDN informer cache instead of our own cache
+	if b.cidnClient != nil {
+		blob, err := b.cidnBlobInformer.Lister().Get(info.Blobs)
+		if err == nil && blob.Status.Phase == v1alpha1.BlobPhaseSucceeded {
+			// Blob exists in CIDN and is succeeded, check if it's in storage
+			stat, err := b.cache.StatBlob(ctx, info.Blobs)
+			if err == nil {
+				return b.serveBlobFromStorage(rw, r, info, t, stat.ModTime(), stat.Size())
+			}
+			// Blob is succeeded in CIDN but not found in storage, will trigger re-sync
+			b.logger.Warn("blob succeeded in CIDN but not found in storage", "digest", info.Blobs, "error", err)
+		}
+		// Blob not found in CIDN informer or not succeeded yet
+		return false
+	}
+
+	// Fall back to local cache when CIDN is not configured
 	value, ok := b.blobCache.Get(info.Blobs)
 	if ok {
 		if value.Error != nil {
@@ -213,22 +239,12 @@ func (b *Blobs) serveCache(rw http.ResponseWriter, r *http.Request, info *BlobIn
 			return true
 		}
 
-		if b.serveCachedBlobHead(rw, r, value.Size) {
-			return true
-		}
-
-		b.serveCachedBlob(rw, r, info, t, value.ModTime, value.Size)
-		return true
+		return b.serveBlobFromStorage(rw, r, info, t, value.ModTime, value.Size)
 	}
 
 	stat, err := b.cache.StatBlob(ctx, info.Blobs)
 	if err == nil {
-		if b.serveCachedBlobHead(rw, r, stat.Size()) {
-			return true
-		}
-
-		b.serveCachedBlob(rw, r, info, t, stat.ModTime(), stat.Size())
-		return true
+		return b.serveBlobFromStorage(rw, r, info, t, stat.ModTime(), stat.Size())
 	}
 	return false
 }
