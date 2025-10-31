@@ -1,6 +1,6 @@
 # ocimirror
 
-**ocimirror** is an OCI (Open Container Initiative) image registry mirror and proxy, providing a transparent caching layer for container images. It's part of the OpenCIDN (Open Container Image Delivery Network) project.
+**ocimirror** is an [OCI (Open Container Initiative)](https://opencontainers.org/) image registry mirror and proxy, providing a transparent caching layer for container images.
 
 ## Features
 
@@ -10,8 +10,6 @@
 - **Easy Integration**: Simply prefix your image references - no configuration changes needed
 
 This project builds upon [CRProxy](https://github.com/DaoCloud/crproxy) with enhanced features and improvements.
-
-For deployment instructions, see the [documentation](https://github.com/OpenCIDN/docs).
 
 ## Usage
 
