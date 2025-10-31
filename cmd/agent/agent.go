@@ -56,10 +56,8 @@ type flagpole struct {
 	TokenPublicKeyFile string
 	TokenURL           string
 
-	BlobNoRedirectSize             int
-	BlobNoRedirectMaxSizePerSecond int
-	BlobCacheDuration              time.Duration
-	ForceBlobNoRedirect            bool
+	BlobCacheDuration time.Duration
+	NoRedirect        bool
 
 	Kubeconfig            string
 	Master                string
@@ -101,10 +99,8 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&flags.TokenPublicKeyFile, "token-public-key-file", flags.TokenPublicKeyFile, "Token public key file")
 	cmd.Flags().StringVar(&flags.TokenURL, "token-url", flags.TokenURL, "Token url")
 
-	cmd.Flags().IntVar(&flags.BlobNoRedirectSize, "blob-no-redirect-size", flags.BlobNoRedirectSize, "Less than or equal to no redirect")
-	cmd.Flags().IntVar(&flags.BlobNoRedirectMaxSizePerSecond, "blob-no-redirect-max-size-per-second", flags.BlobNoRedirectMaxSizePerSecond, "Maximum size per second for no redirect")
 	cmd.Flags().DurationVar(&flags.BlobCacheDuration, "blob-cache-duration", flags.BlobCacheDuration, "Blob cache duration")
-	cmd.Flags().BoolVar(&flags.ForceBlobNoRedirect, "force-blob-no-redirect", flags.ForceBlobNoRedirect, "Force blob no redirect")
+	cmd.Flags().BoolVar(&flags.NoRedirect, "no-redirect", flags.NoRedirect, "No redirect")
 
 	cmd.Flags().StringVar(&flags.Kubeconfig, "kubeconfig", flags.Kubeconfig, "Path to the kubeconfig file to use")
 	cmd.Flags().StringVar(&flags.Master, "master", flags.Master, "The address of the Kubernetes API server")
@@ -149,10 +145,8 @@ func runE(ctx context.Context, flags *flagpole) error {
 	blobsOpts = append(blobsOpts,
 		blobs.WithCache(sdcache),
 		blobs.WithLogger(logger),
-		blobs.WithBlobNoRedirectSize(flags.BlobNoRedirectSize),
-		blobs.WithBlobNoRedirectMaxSizePerSecond(flags.BlobNoRedirectMaxSizePerSecond),
 		blobs.WithBlobCacheDuration(flags.BlobCacheDuration),
-		blobs.WithForceBlobNoRedirect(flags.ForceBlobNoRedirect),
+		blobs.WithNoRedirect(flags.NoRedirect),
 	)
 
 	if flags.Kubeconfig != "" || flags.Master != "" {
