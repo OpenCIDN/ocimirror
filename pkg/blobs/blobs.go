@@ -206,6 +206,27 @@ func (b *Blobs) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 func (b *Blobs) serveCache(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t *token.Token) bool {
 	ctx := r.Context()
 
+	// When CIDN is configured, use the CIDN informer cache instead of our own cache
+	if b.cidnClient != nil {
+		blobName := info.Blobs
+		blob, err := b.cidnBlobInformer.Lister().Get(blobName)
+		if err == nil && blob.Status.Phase == v1alpha1.BlobPhaseSucceeded {
+			// Blob exists in CIDN and is succeeded, check if it's in storage
+			stat, err := b.cache.StatBlob(ctx, info.Blobs)
+			if err == nil {
+				if b.serveCachedBlobHead(rw, r, stat.Size()) {
+					return true
+				}
+
+				b.serveCachedBlob(rw, r, info, t, stat.ModTime(), stat.Size())
+				return true
+			}
+		}
+		// Blob not found in CIDN informer or not succeeded yet
+		return false
+	}
+
+	// Fall back to local cache when CIDN is not configured
 	value, ok := b.blobCache.Get(info.Blobs)
 	if ok {
 		if value.Error != nil {
