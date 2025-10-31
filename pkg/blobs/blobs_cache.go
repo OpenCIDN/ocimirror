@@ -47,26 +47,23 @@ func (c *blobsCache) PutError(key string, err error, sc int) {
 	}, c.duration)
 }
 
-func (c *blobsCache) Put(key string, modTime time.Time, size int64, bigCache bool) {
+func (c *blobsCache) Put(key string, modTime time.Time, size int64) {
 	c.digest.SetWithTTL(key, blobValue{
-		Size:     size,
-		ModTime:  modTime,
-		BigCache: bigCache,
+		Size:    size,
+		ModTime: modTime,
 	}, c.duration)
 }
 
-func (c *blobsCache) PutNoTTL(key string, modTime time.Time, size int64, bigCache bool) {
+func (c *blobsCache) PutNoTTL(key string, modTime time.Time, size int64) {
 	c.digest.Set(key, blobValue{
-		Size:     size,
-		ModTime:  modTime,
-		BigCache: bigCache,
+		Size:    size,
+		ModTime: modTime,
 	})
 }
 
 type blobValue struct {
 	Size       int64
 	ModTime    time.Time
-	BigCache   bool
 	Error      error
 	StatusCode int
 }

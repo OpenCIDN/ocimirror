@@ -46,9 +46,6 @@ type Blobs struct {
 	logger     *slog.Logger
 	cache      *cache.Cache
 
-	bigCacheSize int
-	bigCache     *cache.Cache
-
 	blobCacheDuration time.Duration
 	blobCache         *blobsCache
 	authenticator     *token.Authenticator
@@ -67,14 +64,6 @@ type Option func(c *Blobs) error
 func WithCache(cache *cache.Cache) Option {
 	return func(c *Blobs) error {
 		c.cache = cache
-		return nil
-	}
-}
-
-func WithBigCache(cache *cache.Cache, size int) Option {
-	return func(c *Blobs) error {
-		c.bigCache = cache
-		c.bigCacheSize = size
 		return nil
 	}
 }
@@ -248,47 +237,18 @@ func (b *Blobs) serveCache(rw http.ResponseWriter, r *http.Request, info *BlobIn
 			return true
 		}
 
-		if value.BigCache {
-			b.serveBigCachedBlobRedirect(rw, r, info, t, value.ModTime, value.Size)
-			return true
-		}
-
 		b.serveCachedBlob(rw, r, info, t, value.ModTime, value.Size)
 		return true
 	}
 
 	stat, err := b.cache.StatBlob(ctx, info.Blobs)
 	if err == nil {
-		if b.bigCache != nil && stat.Size() >= int64(b.bigCacheSize) {
-			stat, err := b.bigCache.StatBlob(ctx, info.Blobs)
-			if err == nil {
-				if b.serveCachedBlobHead(rw, r, stat.Size()) {
-					return true
-				}
-
-				b.serveBigCachedBlobRedirect(rw, r, info, t, stat.ModTime(), stat.Size())
-				return true
-			}
-		} else {
-			if b.serveCachedBlobHead(rw, r, stat.Size()) {
-				return true
-			}
-
-			b.serveCachedBlob(rw, r, info, t, stat.ModTime(), stat.Size())
+		if b.serveCachedBlobHead(rw, r, stat.Size()) {
 			return true
 		}
-	} else {
-		if b.bigCache != nil {
-			stat, err := b.bigCache.StatBlob(ctx, info.Blobs)
-			if err == nil {
-				if b.serveCachedBlobHead(rw, r, stat.Size()) {
-					return true
-				}
 
-				b.serveBigCachedBlobRedirect(rw, r, info, t, stat.ModTime(), stat.Size())
-				return true
-			}
-		}
+		b.serveCachedBlob(rw, r, info, t, stat.ModTime(), stat.Size())
+		return true
 	}
 	return false
 }
@@ -404,24 +364,6 @@ func (b *Blobs) cacheBlob(info *BlobInfo) (int, error) {
 	// Download and cache the blob inline
 	defer resp.Body.Close()
 
-	if b.bigCache != nil && b.bigCacheSize > 0 && resp.ContentLength > int64(b.bigCacheSize) {
-		size, err := b.bigCache.PutBlob(ctx, info.Blobs, resp.Body)
-		if err != nil {
-			return 0, fmt.Errorf("Put to big cache: %w", err)
-		}
-
-		stat, err := b.bigCache.StatBlob(ctx, info.Blobs)
-		if err != nil {
-			return 0, err
-		}
-
-		if size != stat.Size() {
-			return 0, fmt.Errorf("size mismatch: expected %d, got %d", stat.Size(), size)
-		}
-		b.blobCache.PutNoTTL(info.Blobs, stat.ModTime(), size, true)
-		return 0, nil
-	}
-
 	size, err := b.cache.PutBlob(ctx, info.Blobs, resp.Body)
 	if err != nil {
 		return 0, err
@@ -435,7 +377,7 @@ func (b *Blobs) cacheBlob(info *BlobInfo) (int, error) {
 	if size != stat.Size() {
 		return 0, fmt.Errorf("size mismatch: expected %d, got %d", stat.Size(), size)
 	}
-	b.blobCache.Put(info.Blobs, stat.ModTime(), size, false)
+	b.blobCache.Put(info.Blobs, stat.ModTime(), size)
 	return 0, nil
 }
 
@@ -568,26 +510,6 @@ func (b *Blobs) serveCachedBlobHead(rw http.ResponseWriter, r *http.Request, siz
 	return false
 }
 
-func (b *Blobs) serveBigCachedBlobRedirect(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t *token.Token, modTime time.Time, size int64) {
-	referer := r.RemoteAddr
-	if info != nil {
-		referer = fmt.Sprintf("%d-%d:%s:%s/%s", t.RegistryID, t.TokenID, referer, info.Host, info.Image)
-	}
-
-	u, err := b.bigCache.RedirectBlob(r.Context(), info.Blobs, referer)
-	if err != nil {
-		b.logger.Info("failed to redirect blob", "digest", info.Blobs, "error", err)
-		b.blobCache.Remove(info.Blobs)
-		utils.ServeError(rw, r, errcode.ErrorCodeUnknown, 0)
-		return
-	}
-
-	b.blobCache.PutNoTTL(info.Blobs, modTime, size, true)
-
-	b.logger.Info("Big Cache hit", "digest", info.Blobs, "url", u)
-	http.Redirect(rw, r, u, http.StatusTemporaryRedirect)
-}
-
 func (b *Blobs) serveCachedBlob(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t *token.Token, modTime time.Time, size int64) {
 	if t.AlwaysRedirect {
 		b.serveCachedBlobRedirect(rw, r, info, t, modTime, size)
@@ -649,7 +571,7 @@ func (b *Blobs) serveCachedBlobDirect(rw http.ResponseWriter, r *http.Request, i
 
 	http.ServeContent(rw, r, "", modTime, rs)
 
-	b.blobCache.Put(info.Blobs, modTime, size, false)
+	b.blobCache.Put(info.Blobs, modTime, size)
 }
 
 func (b *Blobs) serveCachedBlobRedirect(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t *token.Token, modTime time.Time, size int64) {
@@ -666,7 +588,7 @@ func (b *Blobs) serveCachedBlobRedirect(rw http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	b.blobCache.Put(info.Blobs, modTime, size, false)
+	b.blobCache.Put(info.Blobs, modTime, size)
 
 	b.logger.Info("Cache hit", "digest", info.Blobs, "url", u)
 	http.Redirect(rw, r, u, http.StatusTemporaryRedirect)
