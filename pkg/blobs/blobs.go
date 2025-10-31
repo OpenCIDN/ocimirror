@@ -224,6 +224,8 @@ func (b *Blobs) serveCache(rw http.ResponseWriter, r *http.Request, info *BlobIn
 			if err == nil {
 				return b.serveBlobFromStorage(rw, r, info, t, stat.ModTime(), stat.Size())
 			}
+			// Blob is succeeded in CIDN but not found in storage, will trigger re-sync
+			b.logger.Warn("blob succeeded in CIDN but not found in storage", "digest", info.Blobs, "error", err)
 		}
 		// Blob not found in CIDN informer or not succeeded yet
 		return false
