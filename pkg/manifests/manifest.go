@@ -627,8 +627,30 @@ func blobCachePath(blob string) string {
 	return path.Join("/docker/registry/v2/blobs/sha256", blob[:2], blob, "data")
 }
 
+func (c *Manifests) getCachedManifest(info *PathInfo) (cacheValue, bool) {
+	// When CIDN is configured, use the CIDN informer cache instead of our own cache
+	if c.cidnClient != nil {
+		chunkName := fmt.Sprintf("manifest:%s:%s:%s", info.Host, strings.ReplaceAll(info.Image, "/", ":"), info.Manifests)
+		chunk, err := c.cidnChunkInformer.Lister().Get(chunkName)
+		if err == nil && chunk.Status.Phase == v1alpha1.ChunkPhaseSucceeded {
+			// Chunk exists in CIDN and is succeeded, return the cached response
+			return cacheValue{
+				Digest:    chunk.Status.SourceResponse.Headers["docker-content-digest"],
+				MediaType: chunk.Status.SourceResponse.Headers["content-type"],
+				Length:    chunk.Status.SourceResponse.Headers["content-length"],
+				Body:      chunk.Status.ResponseBody,
+			}, true
+		}
+		// Chunk not found in CIDN informer or not succeeded yet
+		return cacheValue{}, false
+	}
+
+	// Fall back to local cache when CIDN is not configured
+	return c.manifestCache.Get(info)
+}
+
 func (c *Manifests) tryFirstServeCachedManifest(rw http.ResponseWriter, r *http.Request, info *PathInfo, t *token.Token) (done bool) {
-	val, ok := c.manifestCache.Get(info)
+	val, ok := c.getCachedManifest(info)
 	if ok {
 		if val.Error != nil {
 			utils.ServeError(rw, r, val.Error, val.StatusCode)
@@ -639,7 +661,9 @@ func (c *Manifests) tryFirstServeCachedManifest(rw http.ResponseWriter, r *http.
 			if c.serveCachedManifest(rw, r, info, true, "hit and mark") {
 				return true
 			}
-			c.manifestCache.Remove(info)
+			if c.cidnClient == nil {
+				c.manifestCache.Remove(info)
+			}
 			return false
 		}
 
@@ -661,7 +685,9 @@ func (c *Manifests) tryFirstServeCachedManifest(rw http.ResponseWriter, r *http.
 		if c.serveCachedManifest(rw, r, info, false, "hit") {
 			return true
 		}
-		c.manifestCache.Remove(info)
+		if c.cidnClient == nil {
+			c.manifestCache.Remove(info)
+		}
 		return false
 	}
 
@@ -677,7 +703,7 @@ func (c *Manifests) tryFirstServeCachedManifest(rw http.ResponseWriter, r *http.
 }
 
 func (c *Manifests) missServeCachedManifest(rw http.ResponseWriter, r *http.Request, info *PathInfo) (done bool) {
-	val, ok := c.manifestCache.Get(info)
+	val, ok := c.getCachedManifest(info)
 	if ok {
 		if val.Error != nil {
 			utils.ServeError(rw, r, val.Error, val.StatusCode)
