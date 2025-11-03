@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/OpenCIDN/ocimirror/internal/registry"
 	"github.com/wzshiming/sss"
 )
 
@@ -106,7 +107,7 @@ func (c *Cache) Writer(ctx context.Context, cachePath string, append bool) (sss.
 }
 
 func (c *Cache) BlobWriter(ctx context.Context, blob string, append bool) (sss.FileWriter, error) {
-	cachePath := blobCachePath(blob)
+	cachePath := registry.BlobCachePath(blob)
 
 	if append {
 		return c.Writer(ctx, cachePath, true)
@@ -119,7 +120,7 @@ func (c *Cache) BlobWriter(ctx context.Context, blob string, append bool) (sss.F
 	return &blobWriter{
 		FileWriter: fw,
 		h:          sha256.New(),
-		cacheHash:  cleanDigest(blob),
+		cacheHash:  registry.CleanDigest(blob),
 	}, nil
 }
 

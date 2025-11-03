@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +16,7 @@ import (
 	"github.com/OpenCIDN/cidn/pkg/apis/task/v1alpha1"
 	"github.com/OpenCIDN/cidn/pkg/clientset/versioned"
 	informers "github.com/OpenCIDN/cidn/pkg/informers/externalversions/task/v1alpha1"
+	"github.com/OpenCIDN/ocimirror/internal/registry"
 	"github.com/OpenCIDN/ocimirror/internal/utils"
 	"github.com/OpenCIDN/ocimirror/pkg/cache"
 	"github.com/OpenCIDN/ocimirror/pkg/token"
@@ -504,7 +504,7 @@ func (c *Manifests) requestWithCIDN(ctx context.Context, info *PathInfo, method 
 
 func (c *Manifests) cacheBlobWithCIDN(ctx context.Context, info *PathInfo) error {
 	sourceURL := fmt.Sprintf("https://%s/v2/%s/manifests/%s", info.Host, info.Image, info.Manifests)
-	cachePath := blobCachePath(info.Manifests)
+	cachePath := registry.BlobCachePath(info.Manifests)
 
 	blobName := info.Manifests
 	blobs := c.cidnClient.TaskV1alpha1().Blobs()
@@ -541,7 +541,7 @@ func (c *Manifests) cacheBlobWithCIDN(ctx context.Context, info *PathInfo) error
 						SkipIfExists: true,
 					},
 				},
-				ContentSha256: cleanDigest(info.Manifests),
+				ContentSha256: registry.CleanDigest(info.Manifests),
 			},
 		}, metav1.CreateOptions{})
 		if err != nil && !apierrors.IsAlreadyExists(err) {
@@ -616,15 +616,6 @@ func (c *Manifests) cacheBlobWithCIDN(ctx context.Context, info *PathInfo) error
 			}
 		}
 	}
-}
-
-func cleanDigest(blob string) string {
-	return strings.TrimPrefix(blob, "sha256:")
-}
-
-func blobCachePath(blob string) string {
-	blob = cleanDigest(blob)
-	return path.Join("/docker/registry/v2/blobs/sha256", blob[:2], blob, "data")
 }
 
 func (c *Manifests) tryFirstServeCachedManifest(rw http.ResponseWriter, r *http.Request, info *PathInfo, t *token.Token) (done bool) {
