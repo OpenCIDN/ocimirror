@@ -15,9 +15,6 @@ import (
 	"github.com/OpenCIDN/ocimirror/internal/registry"
 	"github.com/OpenCIDN/ocimirror/internal/signals"
 	"github.com/OpenCIDN/ocimirror/pkg/transport"
-	"github.com/google/go-containerregistry/pkg/name"
-	containerregistry "github.com/google/go-containerregistry/pkg/v1"
-	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/spf13/cobra"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -35,7 +32,6 @@ func main() {
 
 type flagpole struct {
 	Images                []string
-	Platforms             []string
 	StorageURL            string
 	Destination           string
 	Kubeconfig            string
@@ -68,7 +64,6 @@ Examples:
 	}
 
 	cmd.Flags().StringSliceVar(&flags.Images, "images", flags.Images, "OCI images to synchronize (format: registry/repository:tag or registry/repository@digest)")
-	cmd.Flags().StringSliceVar(&flags.Platforms, "platforms", flags.Platforms, "Platforms to sync (format: os/arch or os/arch/variant, e.g., linux/amd64,linux/arm64)")
 	cmd.Flags().StringVar(&flags.StorageURL, "storage-url", flags.StorageURL, "Storage driver URL for CIDN destination")
 	cmd.Flags().StringVar(&flags.Destination, "destination", flags.Destination, "CIDN destination name (defaults to storage URL scheme)")
 	cmd.Flags().StringVar(&flags.Kubeconfig, "kubeconfig", flags.Kubeconfig, "Path to the kubeconfig file")
@@ -128,7 +123,7 @@ func runE(ctx context.Context, flags *flagpole) error {
 	// Process each image
 	for _, imageRef := range flags.Images {
 		logger.Info("Processing image", "image", imageRef)
-		if err := syncImage(ctx, clientset, httpClient, imageRef, destination, flags.Platforms, logger); err != nil {
+		if err := syncImage(ctx, clientset, httpClient, imageRef, destination, logger); err != nil {
 			logger.Error("Failed to sync image", "image", imageRef, "error", err)
 			return fmt.Errorf("failed to sync image %s: %w", imageRef, err)
 		}
@@ -138,150 +133,91 @@ func runE(ctx context.Context, flags *flagpole) error {
 	return nil
 }
 
-func syncImage(ctx context.Context, clientset versioned.Interface, httpClient *http.Client, imageRef, destination string, platforms []string, logger *slog.Logger) error {
+// imageReference represents a parsed OCI image reference
+type imageReference struct {
+	Host       string
+	Repository string
+	Reference  string // tag or digest
+	IsDigest   bool
+}
+
+// parseImageReference parses an image reference like docker.io/library/nginx:latest or docker.io/library/nginx@sha256:...
+func parseImageReference(ref string) (*imageReference, error) {
+	// Handle references like nginx:latest (without registry)
+	if !strings.Contains(ref, "/") {
+		ref = "docker.io/library/" + ref
+	} else if strings.Count(ref, "/") == 1 && !strings.Contains(strings.Split(ref, "/")[0], ".") {
+		// Handle references like library/nginx:latest
+		ref = "docker.io/" + ref
+	}
+
+	var host, repository, reference string
+	var isDigest bool
+
+	// Check if it's a digest reference
+	if strings.Contains(ref, "@") {
+		parts := strings.SplitN(ref, "@", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid digest reference: %s", ref)
+		}
+		reference = parts[1]
+		isDigest = true
+		ref = parts[0]
+	} else if strings.Contains(ref, ":") {
+		// Check for tag (but not part of the host)
+		lastColon := strings.LastIndex(ref, ":")
+		beforeColon := ref[:lastColon]
+		if strings.Contains(beforeColon, "/") {
+			// This is a tag, not a port
+			reference = ref[lastColon+1:]
+			ref = beforeColon
+		}
+	}
+
+	// Default tag if none specified
+	if reference == "" {
+		reference = "latest"
+	}
+
+	// Split host and repository
+	parts := strings.SplitN(ref, "/", 2)
+	if len(parts) == 2 && strings.Contains(parts[0], ".") {
+		host = parts[0]
+		repository = parts[1]
+	} else {
+		return nil, fmt.Errorf("invalid image reference: %s", ref)
+	}
+
+	return &imageReference{
+		Host:       host,
+		Repository: repository,
+		Reference:  reference,
+		IsDigest:   isDigest,
+	}, nil
+}
+
+func syncImage(ctx context.Context, clientset versioned.Interface, httpClient *http.Client, imageRef, destination string, logger *slog.Logger) error {
 	// Parse image reference
-	ref, err := name.ParseReference(imageRef)
+	ref, err := parseImageReference(imageRef)
 	if err != nil {
 		return fmt.Errorf("failed to parse image reference: %w", err)
 	}
 
-	// Get image descriptor
-	desc, err := remote.Get(ref, remote.WithContext(ctx), remote.WithTransport(httpClient.Transport))
-	if err != nil {
-		return fmt.Errorf("failed to get image descriptor: %w", err)
-	}
+	logger.Info("Image details", "host", ref.Host, "repository", ref.Repository, "reference", ref.Reference, "isDigest", ref.IsDigest)
 
-	host := ref.Context().RegistryStr()
-	repository := ref.Context().RepositoryStr()
-	manifestDigest := desc.Digest.String()
-	
-	// Check if this is a tag or digest reference
-	_, isTag := ref.(name.Tag)
-
-	logger.Info("Image details", "host", host, "repository", repository, "digest", manifestDigest, "isTag", isTag)
-
-	// For tag-based references, create Chunk for the tag, then Blob for the digest
-	// For digest-based references, directly create Blob
-	if isTag {
+	// For tag-based references, create Chunk to resolve tag to digest, then create Blob
+	if !ref.IsDigest {
 		// Create Chunk for tag-based manifest (to resolve tag to digest)
-		if err := createManifestChunk(ctx, clientset, host, repository, ref.Identifier(), logger); err != nil {
+		if err := createManifestChunk(ctx, clientset, ref.Host, ref.Repository, ref.Reference, logger); err != nil {
 			return fmt.Errorf("failed to create manifest chunk: %w", err)
 		}
-		// Also create Blob for the resolved digest
-		if err := createManifestBlob(ctx, clientset, host, repository, manifestDigest, destination, logger); err != nil {
-			return fmt.Errorf("failed to create manifest blob: %w", err)
-		}
+		logger.Info("Created resources for tag-based image - CIDN will resolve and sync automatically")
 	} else {
-		// Use Blob for digest-based manifest
-		if err := createManifestBlob(ctx, clientset, host, repository, manifestDigest, destination, logger); err != nil {
+		// For digest-based references, directly create Blob
+		if err := createManifestBlob(ctx, clientset, ref.Host, ref.Repository, ref.Reference, destination, logger); err != nil {
 			return fmt.Errorf("failed to create manifest blob: %w", err)
 		}
-	}
-
-	// Parse manifest to get layer blobs
-	manifest, err := desc.Image()
-	if err != nil {
-		// It might be an index
-		index, indexErr := desc.ImageIndex()
-		if indexErr != nil {
-			return fmt.Errorf("failed to parse as image or index: image error: %w, index error: %w", err, indexErr)
-		}
-		return syncImageIndex(ctx, clientset, httpClient, index, host, repository, destination, platforms, logger)
-	}
-
-	return syncImageManifest(ctx, clientset, manifest, host, repository, destination, logger)
-}
-
-func syncImageIndex(ctx context.Context, clientset versioned.Interface, httpClient *http.Client, index containerregistry.ImageIndex, host, repository, destination string, platforms []string, logger *slog.Logger) error {
-	indexManifest, err := index.IndexManifest()
-	if err != nil {
-		return fmt.Errorf("failed to get index manifest: %w", err)
-	}
-
-	// Build platform filter map if specified
-	platformFilter := make(map[string]bool)
-	if len(platforms) > 0 {
-		for _, p := range platforms {
-			platformFilter[p] = true
-		}
-	}
-
-	// Process each manifest in the index
-	for _, desc := range indexManifest.Manifests {
-		// Check platform filter
-		if len(platformFilter) > 0 && desc.Platform != nil {
-			platformStr := fmt.Sprintf("%s/%s", desc.Platform.OS, desc.Platform.Architecture)
-			if desc.Platform.Variant != "" {
-				platformStr = fmt.Sprintf("%s/%s", platformStr, desc.Platform.Variant)
-			}
-			if !platformFilter[platformStr] {
-				logger.Info("Skipping platform", "digest", desc.Digest.String(), "platform", platformStr)
-				continue
-			}
-		}
-
-		logger.Info("Processing manifest from index", "digest", desc.Digest.String(), "platform", desc.Platform)
-
-		// Create blob for this manifest (always use Blob for digest-based manifests in index)
-		manifestDigest := desc.Digest.String()
-		if err := createManifestBlob(ctx, clientset, host, repository, manifestDigest, destination, logger); err != nil {
-			logger.Warn("Failed to create manifest blob from index", "digest", manifestDigest, "error", err)
-			continue
-		}
-
-		// Get the image for this manifest
-		img, err := index.Image(desc.Digest)
-		if err != nil {
-			logger.Warn("Failed to get image from index", "digest", desc.Digest.String(), "error", err)
-			continue
-		}
-
-		if err := syncImageManifest(ctx, clientset, img, host, repository, destination, logger); err != nil {
-			logger.Warn("Failed to sync image manifest from index", "digest", desc.Digest.String(), "error", err)
-		}
-	}
-
-	return nil
-}
-
-func syncImageManifest(ctx context.Context, clientset versioned.Interface, img containerregistry.Image, host, repository, destination string, logger *slog.Logger) error {
-	// Get layers
-	layers, err := img.Layers()
-	if err != nil {
-		return fmt.Errorf("failed to get layers: %w", err)
-	}
-
-	// Create Blob for each layer
-	for _, layer := range layers {
-		digest, err := layer.Digest()
-		if err != nil {
-			logger.Warn("Failed to get layer digest", "error", err)
-			continue
-		}
-
-		size, err := layer.Size()
-		if err != nil {
-			logger.Warn("Failed to get layer size", "digest", digest.String(), "error", err)
-			continue
-		}
-
-		logger.Info("Processing layer", "digest", digest.String(), "size", size)
-
-		if err := createLayerBlob(ctx, clientset, host, repository, digest.String(), destination, logger); err != nil {
-			logger.Warn("Failed to create layer blob", "digest", digest.String(), "error", err)
-			continue
-		}
-	}
-
-	// Get config blob
-	configName, err := img.ConfigName()
-	if err != nil {
-		return fmt.Errorf("failed to get config digest: %w", err)
-	}
-
-	logger.Info("Processing config", "digest", configName.String())
-	if err := createLayerBlob(ctx, clientset, host, repository, configName.String(), destination, logger); err != nil {
-		logger.Warn("Failed to create config blob", "digest", configName.String(), "error", err)
+		logger.Info("Created manifest blob for digest-based image - CIDN will sync layers automatically")
 	}
 
 	return nil
