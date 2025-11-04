@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
-	"time"
 
 	"github.com/OpenCIDN/cidn/pkg/clientset/versioned"
 	"github.com/OpenCIDN/cidn/pkg/informers/externalversions"
@@ -94,12 +93,17 @@ func runE(ctx context.Context, flags *flagpole) error {
 	chunkInformer := sharedInformerFactory.Task().V1alpha1().Chunks()
 
 	// Start informers
-	go blobInformer.Informer().RunWithContext(ctx)
-	go chunkInformer.Informer().RunWithContext(ctx)
+	sharedInformerFactory.Start(ctx.Done())
 
 	// Wait for cache sync
 	logger.Info("Waiting for informer caches to sync...")
-	time.Sleep(2 * time.Second)
+	synced := sharedInformerFactory.WaitForCacheSync(ctx.Done())
+	for informerType, hasSynced := range synced {
+		if !hasSynced {
+			return fmt.Errorf("failed to sync cache for informer %s", informerType)
+		}
+	}
+	logger.Info("Informer caches synced successfully")
 
 	// Create CIDN client
 	cidnClient := &cidn.CIDN{
