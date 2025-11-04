@@ -181,7 +181,8 @@ func syncImage(ctx context.Context, logger *slog.Logger, cidnClient *cidn.CIDN, 
 	var tag, digest string
 
 	// Determine if it's a tag or digest reference
-	if strings.Contains(ref.Identifier(), "sha256:") {
+	// Check if identifier contains any hash algorithm prefix (sha256:, sha512:, etc.)
+	if strings.Contains(ref.Identifier(), ":") && (strings.HasPrefix(ref.Identifier(), "sha") || strings.HasPrefix(ref.Identifier(), "md5")) {
 		digest = ref.Identifier()
 	} else {
 		tag = ref.Identifier()
@@ -239,12 +240,31 @@ func syncImage(ctx context.Context, logger *slog.Logger, cidnClient *cidn.CIDN, 
 		return fmt.Errorf("failed to read manifest body: %w", err)
 	}
 
-	// Try to parse as manifest list first, then as single manifest
+	// Determine manifest type by checking mediaType field
+	var rawManifest map[string]interface{}
+	if err := json.Unmarshal(body, &rawManifest); err != nil {
+		return fmt.Errorf("failed to parse manifest: %w", err)
+	}
+
+	mediaType, _ := rawManifest["mediaType"].(string)
+	
+	// Try to parse based on mediaType
 	var layers []string
 	
-	// Try parsing as index/manifest list
-	var indexManifest spec.IndexManifestLayers
-	if err := json.Unmarshal(body, &indexManifest); err == nil && len(indexManifest.Manifests) > 0 {
+	// Check if it's a manifest list/index
+	isManifestList := mediaType == "application/vnd.docker.distribution.manifest.list.v2+json" ||
+		mediaType == "application/vnd.oci.image.index.v1+json"
+	
+	if isManifestList {
+		var indexManifest spec.IndexManifestLayers
+		if err := json.Unmarshal(body, &indexManifest); err != nil {
+			return fmt.Errorf("failed to parse manifest list: %w", err)
+		}
+		
+		if len(indexManifest.Manifests) == 0 {
+			return fmt.Errorf("manifest list has no manifests")
+		}
+		
 		logger.Info("Processing manifest list", "count", len(indexManifest.Manifests))
 		// For manifest list, sync each manifest
 		for _, m := range indexManifest.Manifests {
@@ -261,20 +281,20 @@ func syncImage(ctx context.Context, logger *slog.Logger, cidnClient *cidn.CIDN, 
 			layers = append(layers, subLayers...)
 		}
 	} else {
-		// Try parsing as single manifest
+		// Parse as single manifest
 		var manifest spec.ManifestLayers
-		if err := json.Unmarshal(body, &manifest); err == nil {
-			logger.Info("Processing single manifest")
-			// Add config blob
-			if manifest.Config.Digest != "" {
-				layers = append(layers, manifest.Config.Digest)
-			}
-			// Add layer blobs
-			for _, layer := range manifest.Layers {
-				layers = append(layers, layer.Digest)
-			}
-		} else {
-			return fmt.Errorf("failed to parse manifest as either list or single manifest")
+		if err := json.Unmarshal(body, &manifest); err != nil {
+			return fmt.Errorf("failed to parse single manifest: %w", err)
+		}
+		
+		logger.Info("Processing single manifest")
+		// Add config blob
+		if manifest.Config.Digest != "" {
+			layers = append(layers, manifest.Config.Digest)
+		}
+		// Add layer blobs
+		for _, layer := range manifest.Layers {
+			layers = append(layers, layer.Digest)
 		}
 	}
 
