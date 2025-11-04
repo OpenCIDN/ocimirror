@@ -23,3 +23,9 @@ go.work.sum
 
 # env file
 .env
+
+# Command binaries in root directory
+/agent
+/auth
+/gateway
+/sync
