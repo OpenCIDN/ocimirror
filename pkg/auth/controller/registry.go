@@ -4,6 +4,7 @@ import (
 	"crypto/rsa"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/OpenCIDN/ocimirror/internal/slices"
 	"github.com/OpenCIDN/ocimirror/pkg/auth/model"
@@ -39,6 +40,7 @@ type RegistryDetailResponse struct {
 	UserID     int64              `json:"user_id"`
 	Domain     string             `json:"domain"`
 	Data       model.RegistryAttr `json:"data"`
+	CreateAt   time.Time          `json:"create_at"`
 }
 
 type RegistryController struct {
@@ -178,6 +180,7 @@ func (rc *RegistryController) Get(req *restful.Request, resp *restful.Response) 
 		UserID:     registry.UserID,
 		Domain:     registry.Domain,
 		Data:       registry.Data,
+		CreateAt:   registry.CreateAt,
 	})
 }
 
@@ -200,6 +203,7 @@ func (rc *RegistryController) List(req *restful.Request, resp *restful.Response)
 			UserID:     registry.UserID,
 			Domain:     registry.Domain,
 			Data:       registry.Data,
+			CreateAt:   registry.CreateAt,
 		}
 	}))
 }

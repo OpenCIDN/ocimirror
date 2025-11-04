@@ -2,11 +2,13 @@ package model
 
 import (
 	"database/sql/driver"
+	"time"
 )
 
 type Token struct {
-	TokenID int64
-	UserID  int64
+	TokenID  int64
+	UserID   int64
+	CreateAt time.Time
 
 	Account  string
 	Password string

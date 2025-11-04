@@ -4,6 +4,7 @@ import (
 	"crypto/rsa"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/OpenCIDN/ocimirror/internal/slices"
 	"github.com/OpenCIDN/ocimirror/pkg/auth/model"
@@ -22,9 +23,10 @@ type TokenResponse struct {
 }
 
 type TokenDetailResponse struct {
-	TokenID int64           `json:"token_id"`
-	Account string          `json:"account"`
-	Data    model.TokenAttr `json:"data"`
+	TokenID  int64           `json:"token_id"`
+	Account  string          `json:"account"`
+	Data     model.TokenAttr `json:"data"`
+	CreateAt time.Time       `json:"create_at"`
 }
 
 type TokenController struct {
@@ -121,9 +123,10 @@ func (tc *TokenController) List(req *restful.Request, resp *restful.Response) {
 
 	resp.WriteEntity(slices.Map(tokens, func(token model.Token) TokenDetailResponse {
 		return TokenDetailResponse{
-			TokenID: token.TokenID,
-			Account: token.Account,
-			Data:    token.Data,
+			TokenID:  token.TokenID,
+			Account:  token.Account,
+			Data:     token.Data,
+			CreateAt: token.CreateAt,
 		}
 	}))
 }
@@ -149,9 +152,10 @@ func (tc *TokenController) Get(req *restful.Request, resp *restful.Response) {
 	}
 
 	resp.WriteHeaderAndEntity(http.StatusOK, TokenDetailResponse{
-		TokenID: token.TokenID,
-		Account: token.Account,
-		Data:    token.Data,
+		TokenID:  token.TokenID,
+		Account:  token.Account,
+		Data:     token.Data,
+		CreateAt: token.CreateAt,
 	})
 }
 

@@ -50,13 +50,13 @@ func (r *Registry) Create(ctx context.Context, registry model.Registry) (int64, 
 }
 
 const getRegistryByIDSQL = `
-SELECT id, user_id, domain, data FROM registries WHERE id = ? AND user_id = ? AND delete_at IS NULL
+SELECT id, user_id, domain, data, create_at FROM registries WHERE id = ? AND user_id = ? AND delete_at IS NULL
 `
 
 func (r *Registry) GetByID(ctx context.Context, registryID, userID int64) (model.Registry, error) {
 	db := GetDB(ctx)
 	var registry model.Registry
-	err := db.QueryRowContext(ctx, getRegistryByIDSQL, registryID, userID).Scan(&registry.RegistryID, &registry.UserID, &registry.Domain, &registry.Data)
+	err := db.QueryRowContext(ctx, getRegistryByIDSQL, registryID, userID).Scan(&registry.RegistryID, &registry.UserID, &registry.Domain, &registry.Data, &registry.CreateAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return model.Registry{}, fmt.Errorf("registry not found: %w", err)
@@ -67,7 +67,7 @@ func (r *Registry) GetByID(ctx context.Context, registryID, userID int64) (model
 }
 
 const getRegistriesByUserIDSQL = `
-SELECT id, user_id, domain, data FROM registries WHERE user_id = ? AND delete_at IS NULL
+SELECT id, user_id, domain, data, create_at FROM registries WHERE user_id = ? AND delete_at IS NULL
 `
 
 func (r *Registry) GetByUserID(ctx context.Context, userID int64) ([]model.Registry, error) {
@@ -81,7 +81,7 @@ func (r *Registry) GetByUserID(ctx context.Context, userID int64) ([]model.Regis
 	var registries []model.Registry
 	for rows.Next() {
 		var registry model.Registry
-		if err := rows.Scan(&registry.RegistryID, &registry.UserID, &registry.Domain, &registry.Data); err != nil {
+		if err := rows.Scan(&registry.RegistryID, &registry.UserID, &registry.Domain, &registry.Data, &registry.CreateAt); err != nil {
 			return nil, fmt.Errorf("failed to scan registry: %w", err)
 		}
 		registries = append(registries, registry)
@@ -95,14 +95,14 @@ func (r *Registry) GetByUserID(ctx context.Context, userID int64) ([]model.Regis
 }
 
 const getRegistryByDomainSQL = `
-SELECT id, user_id, domain, data FROM registries WHERE domain = ? AND delete_at IS NULL
+SELECT id, user_id, domain, data, create_at FROM registries WHERE domain = ? AND delete_at IS NULL
 LIMIT 1
 `
 
 func (r *Registry) GetByDomain(ctx context.Context, domain string) (model.Registry, error) {
 	db := GetDB(ctx)
 	var registry model.Registry
-	err := db.QueryRowContext(ctx, getRegistryByDomainSQL, domain).Scan(&registry.RegistryID, &registry.UserID, &registry.Domain, &registry.Data)
+	err := db.QueryRowContext(ctx, getRegistryByDomainSQL, domain).Scan(&registry.RegistryID, &registry.UserID, &registry.Domain, &registry.Data, &registry.CreateAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return model.Registry{}, fmt.Errorf("registry not found for domain %s: %w", domain, err)

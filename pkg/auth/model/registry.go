@@ -2,11 +2,13 @@ package model
 
 import (
 	"database/sql/driver"
+	"time"
 )
 
 type Registry struct {
 	RegistryID int64
 	UserID     int64
+	CreateAt   time.Time
 
 	Domain string
 	Data   RegistryAttr

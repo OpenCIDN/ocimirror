@@ -51,13 +51,13 @@ func (t *Token) Create(ctx context.Context, token model.Token) (int64, error) {
 }
 
 const getTokenByIDSQL = `
-SELECT id, user_id, account, data FROM tokens WHERE id = ? AND user_id = ? AND delete_at IS NULL
+SELECT id, user_id, account, data, create_at FROM tokens WHERE id = ? AND user_id = ? AND delete_at IS NULL
 `
 
 func (t *Token) GetByID(ctx context.Context, tokenID, userID int64) (model.Token, error) {
 	db := GetDB(ctx)
 	var token model.Token
-	err := db.QueryRowContext(ctx, getTokenByIDSQL, tokenID, userID).Scan(&token.TokenID, &token.UserID, &token.Account, &token.Data)
+	err := db.QueryRowContext(ctx, getTokenByIDSQL, tokenID, userID).Scan(&token.TokenID, &token.UserID, &token.Account, &token.Data, &token.CreateAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return model.Token{}, fmt.Errorf("token not found: %w", err)
@@ -68,7 +68,7 @@ func (t *Token) GetByID(ctx context.Context, tokenID, userID int64) (model.Token
 }
 
 const getTokensByUserIDSQL = `
-SELECT id, user_id, account, data FROM tokens WHERE user_id = ? AND delete_at IS NULL
+SELECT id, user_id, account, data, create_at FROM tokens WHERE user_id = ? AND delete_at IS NULL
 `
 
 func (t *Token) GetByUserID(ctx context.Context, userID int64) ([]model.Token, error) {
@@ -82,7 +82,7 @@ func (t *Token) GetByUserID(ctx context.Context, userID int64) ([]model.Token, e
 	var tokens []model.Token
 	for rows.Next() {
 		var token model.Token
-		if err := rows.Scan(&token.TokenID, &token.UserID, &token.Account, &token.Data); err != nil {
+		if err := rows.Scan(&token.TokenID, &token.UserID, &token.Account, &token.Data, &token.CreateAt); err != nil {
 			return nil, fmt.Errorf("failed to scan token: %w", err)
 		}
 		tokens = append(tokens, token)
@@ -96,13 +96,13 @@ func (t *Token) GetByUserID(ctx context.Context, userID int64) ([]model.Token, e
 }
 
 const getTokenSQL = `
-SELECT id, user_id, account, data FROM tokens WHERE user_id = ? AND account = ? AND password = ? AND delete_at IS NULL
+SELECT id, user_id, account, data, create_at FROM tokens WHERE user_id = ? AND account = ? AND password = ? AND delete_at IS NULL
 `
 
 func (t *Token) GetByAccount(ctx context.Context, userID int64, account, password string) (model.Token, error) {
 	db := GetDB(ctx)
 	var token model.Token
-	err := db.QueryRowContext(ctx, getTokenSQL, userID, account, password).Scan(&token.TokenID, &token.UserID, &token.Account, &token.Data)
+	err := db.QueryRowContext(ctx, getTokenSQL, userID, account, password).Scan(&token.TokenID, &token.UserID, &token.Account, &token.Data, &token.CreateAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return model.Token{}, fmt.Errorf("token not found: %w", err)
