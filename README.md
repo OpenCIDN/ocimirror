@@ -70,6 +70,18 @@ Proactively synchronize OCI images using CIDN resources:
 ./sync --storage-url s3://mybucket --kubeconfig ~/.kube/config \
   --platform linux/arm64 \
   ghcr.io/owner/repo:v1.0.0
+
+# Sync ARM v7 platform with variant
+./sync --storage-url s3://mybucket --kubeconfig ~/.kube/config \
+  --platform linux/arm/v7 \
+  docker.io/library/alpine:latest
+
+# Sync multiple platforms
+./sync --storage-url s3://mybucket --kubeconfig ~/.kube/config \
+  --platform linux/amd64 \
+  --platform linux/arm64 \
+  --platform linux/arm/v7 \
+  docker.io/library/nginx:latest
 ```
 
-The sync command creates CIDN resources to proactively synchronize images to your cache, eliminating the need to wait for the first pull request. When a platform is specified, the command will parse manifest lists and sync the platform-specific manifest along with its config and layer blobs.
+The sync command creates CIDN resources to proactively synchronize images to your cache, eliminating the need to wait for the first pull request. When platforms are specified, the command will parse manifest lists and sync the platform-specific manifests along with their config and layer blobs. Platform variants (like arm/v7, arm/v8) are supported for ARM architectures.

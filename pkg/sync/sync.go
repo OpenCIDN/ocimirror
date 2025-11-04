@@ -15,7 +15,7 @@ import (
 )
 
 // SyncImage synchronizes a single OCI image using CIDN
-func SyncImage(ctx context.Context, cidnClient *cidn.CIDN, cache *cache.Cache, imageRef string, platformFilter *spec.Platform, logger *slog.Logger) error {
+func SyncImage(ctx context.Context, cidnClient *cidn.CIDN, cache *cache.Cache, imageRef string, platformFilters []*spec.Platform, logger *slog.Logger) error {
 	// Parse the image reference
 	host, image, reference, isDigest, err := ParseImageReference(imageRef)
 	if err != nil {
@@ -32,7 +32,7 @@ func SyncImage(ctx context.Context, cidnClient *cidn.CIDN, cache *cache.Cache, i
 		// Direct digest reference - sync the manifest
 		logger.Info("Syncing manifest by digest", "host", host, "image", image, "digest", reference)
 
-		if err := syncManifestAndBlobs(ctx, cidnClient, cache, host, image, reference, platformFilter, logger); err != nil {
+		if err := syncManifestAndBlobs(ctx, cidnClient, cache, host, image, reference, platformFilters, logger); err != nil {
 			return fmt.Errorf("failed to sync manifest digest: %w", err)
 		}
 
@@ -60,7 +60,7 @@ func SyncImage(ctx context.Context, cidnClient *cidn.CIDN, cache *cache.Cache, i
 		logger.Info("Resolved tag to digest", "tag", tag, "digest", digest)
 
 		// Step 2: Sync the manifest by digest
-		if err := syncManifestAndBlobs(ctx, cidnClient, cache, host, image, digest, platformFilter, logger); err != nil {
+		if err := syncManifestAndBlobs(ctx, cidnClient, cache, host, image, digest, platformFilters, logger); err != nil {
 			return fmt.Errorf("failed to sync manifest: %w", err)
 		}
 
@@ -78,14 +78,14 @@ func SyncImage(ctx context.Context, cidnClient *cidn.CIDN, cache *cache.Cache, i
 }
 
 // syncManifestAndBlobs syncs a manifest and optionally its platform-specific blobs
-func syncManifestAndBlobs(ctx context.Context, cidnClient *cidn.CIDN, cache *cache.Cache, host, image, digest string, platformFilter *spec.Platform, logger *slog.Logger) error {
+func syncManifestAndBlobs(ctx context.Context, cidnClient *cidn.CIDN, cache *cache.Cache, host, image, digest string, platformFilters []*spec.Platform, logger *slog.Logger) error {
 	// Sync the manifest
 	if err := cidnClient.ManifestDigest(ctx, host, image, digest); err != nil {
 		return err
 	}
 
-	// If platform filter is specified, we need to parse the manifest and sync specific blobs
-	if platformFilter != nil {
+	// If platform filters are specified, we need to parse the manifest and sync specific blobs
+	if len(platformFilters) > 0 {
 		// Get the manifest content from cache
 		manifestContent, _, _, err := cache.GetManifestContent(ctx, host, image, digest)
 		if err != nil {
@@ -96,24 +96,26 @@ func syncManifestAndBlobs(ctx context.Context, cidnClient *cidn.CIDN, cache *cac
 		// Try to parse as image index/manifest list
 		var indexManifest spec.IndexManifestLayers
 		if err := json.Unmarshal(manifestContent, &indexManifest); err == nil && len(indexManifest.Manifests) > 0 {
-			// This is a manifest list - find the platform-specific manifest
+			// This is a manifest list - find platform-specific manifests
 			logger.Info("Detected manifest list", "manifestCount", len(indexManifest.Manifests))
 
 			for _, m := range indexManifest.Manifests {
-				if matchesPlatform(m.Platform, *platformFilter) {
-					logger.Info("Found matching platform manifest", "digest", m.Digest, "platform", fmt.Sprintf("%s/%s", m.Platform.OS, m.Platform.Architecture))
+				for _, filter := range platformFilters {
+					if matchesPlatform(m.Platform, *filter) {
+						logger.Info("Found matching platform manifest", "digest", m.Digest, "platform", fmt.Sprintf("%s/%s%s", m.Platform.OS, m.Platform.Architecture, formatVariant(m.Platform.Variant)))
 
-					// Sync the platform-specific manifest
-					if err := cidnClient.ManifestDigest(ctx, host, image, m.Digest); err != nil {
-						return fmt.Errorf("failed to sync platform manifest: %w", err)
+						// Sync the platform-specific manifest
+						if err := cidnClient.ManifestDigest(ctx, host, image, m.Digest); err != nil {
+							return fmt.Errorf("failed to sync platform manifest: %w", err)
+						}
+
+						// Get and parse the platform-specific manifest to sync its blobs
+						if err := syncManifestBlobs(ctx, cidnClient, cache, host, image, m.Digest, logger); err != nil {
+							logger.Warn("Failed to sync blobs for platform manifest", "error", err)
+						}
+
+						break
 					}
-
-					// Get and parse the platform-specific manifest to sync its blobs
-					if err := syncManifestBlobs(ctx, cidnClient, cache, host, image, m.Digest, logger); err != nil {
-						logger.Warn("Failed to sync blobs for platform manifest", "error", err)
-					}
-
-					break
 				}
 			}
 		} else {
@@ -125,6 +127,14 @@ func syncManifestAndBlobs(ctx context.Context, cidnClient *cidn.CIDN, cache *cac
 	}
 
 	return nil
+}
+
+// formatVariant returns a formatted variant string for logging
+func formatVariant(variant string) string {
+	if variant == "" {
+		return ""
+	}
+	return "/" + variant
 }
 
 // syncManifestBlobs parses a manifest and syncs its config and layer blobs
@@ -162,7 +172,14 @@ func syncManifestBlobs(ctx context.Context, cidnClient *cidn.CIDN, cache *cache.
 
 // matchesPlatform checks if a platform matches the filter
 func matchesPlatform(platform, filter spec.Platform) bool {
-	return platform.OS == filter.OS && platform.Architecture == filter.Architecture
+	if platform.OS != filter.OS || platform.Architecture != filter.Architecture {
+		return false
+	}
+	// If filter specifies a variant, it must match
+	if filter.Variant != "" && platform.Variant != filter.Variant {
+		return false
+	}
+	return true
 }
 
 // ParseImageReference parses an image reference in the format:
