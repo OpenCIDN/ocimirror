@@ -1,0 +1,187 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/url"
+	"os"
+	"time"
+
+	"github.com/OpenCIDN/cidn/pkg/clientset/versioned"
+	"github.com/OpenCIDN/cidn/pkg/informers/externalversions"
+	"github.com/OpenCIDN/ocimirror/internal/signals"
+	"github.com/OpenCIDN/ocimirror/pkg/cidn"
+	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/spf13/cobra"
+	"k8s.io/client-go/tools/clientcmd"
+)
+
+func main() {
+	ctx := signals.SetupSignalContext()
+	err := NewCommand().ExecuteContext(ctx)
+	if err != nil {
+		slog.Error("execute failed", "error", err)
+		os.Exit(1)
+	}
+}
+
+type flagpole struct {
+	StorageURL            string
+	Kubeconfig            string
+	Master                string
+	InsecureSkipTLSVerify bool
+	Images                []string
+}
+
+func NewCommand() *cobra.Command {
+	flags := &flagpole{}
+
+	cmd := &cobra.Command{
+		Use:   "sync [image...]",
+		Short: "Proactively synchronize OCI images using CIDN",
+		Long: `Proactively create CIDN resources for synchronizing OCI images.
+This command uses CIDN and cache, not the source directly.
+
+Examples:
+  sync --storage-url s3://mybucket --kubeconfig ~/.kube/config docker.io/library/nginx:latest
+  sync --storage-url s3://mybucket --kubeconfig ~/.kube/config docker.io/library/nginx@sha256:abc123...
+  sync --storage-url s3://mybucket --kubeconfig ~/.kube/config ghcr.io/owner/repo:v1.0.0`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			flags.Images = args
+			return runE(cmd.Context(), flags)
+		},
+	}
+
+	cmd.Flags().StringVar(&flags.StorageURL, "storage-url", flags.StorageURL, "Storage driver url (required)")
+	cmd.Flags().StringVar(&flags.Kubeconfig, "kubeconfig", flags.Kubeconfig, "Path to the kubeconfig file to use")
+	cmd.Flags().StringVar(&flags.Master, "master", flags.Master, "The address of the Kubernetes API server")
+	cmd.Flags().BoolVar(&flags.InsecureSkipTLSVerify, "insecure-skip-tls-verify", false, "If true, the server's certificate will not be checked for validity. This will make your HTTPS connections insecure")
+
+	cmd.MarkFlagRequired("storage-url")
+
+	return cmd
+}
+
+func runE(ctx context.Context, flags *flagpole) error {
+	if len(flags.Images) == 0 {
+		return fmt.Errorf("at least one image reference is required")
+	}
+
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+
+	// Parse storage URL
+	u, err := url.Parse(flags.StorageURL)
+	if err != nil {
+		return fmt.Errorf("failed to parse storage URL: %w", err)
+	}
+
+	// Create Kubernetes client
+	config, err := clientcmd.BuildConfigFromFlags(flags.Master, flags.Kubeconfig)
+	if err != nil {
+		return fmt.Errorf("error getting config: %w", err)
+	}
+	config.TLSClientConfig.Insecure = flags.InsecureSkipTLSVerify
+
+	clientset, err := versioned.NewForConfig(config)
+	if err != nil {
+		return fmt.Errorf("error creating clientset: %w", err)
+	}
+
+	// Create informers
+	sharedInformerFactory := externalversions.NewSharedInformerFactory(clientset, 0)
+	blobInformer := sharedInformerFactory.Task().V1alpha1().Blobs()
+	chunkInformer := sharedInformerFactory.Task().V1alpha1().Chunks()
+
+	// Start informers
+	go blobInformer.Informer().RunWithContext(ctx)
+	go chunkInformer.Informer().RunWithContext(ctx)
+
+	// Wait for cache sync
+	logger.Info("Waiting for informer caches to sync...")
+	time.Sleep(2 * time.Second)
+
+	// Create CIDN client
+	cidnClient := &cidn.CIDN{
+		Client:        clientset,
+		BlobInformer:  blobInformer,
+		ChunkInformer: chunkInformer,
+		Destination:   u.Scheme,
+	}
+
+	// Process each image
+	for _, imageRef := range flags.Images {
+		logger.Info("Processing image", "image", imageRef)
+		if err := syncImage(ctx, cidnClient, imageRef, logger); err != nil {
+			logger.Error("Failed to sync image", "image", imageRef, "error", err)
+			return fmt.Errorf("failed to sync image %s: %w", imageRef, err)
+		}
+		logger.Info("Successfully synced image", "image", imageRef)
+	}
+
+	logger.Info("All images synced successfully")
+	return nil
+}
+
+func syncImage(ctx context.Context, cidnClient *cidn.CIDN, imageRef string, logger *slog.Logger) error {
+	// Parse the image reference
+	ref, err := name.ParseReference(imageRef, name.WeakValidation)
+	if err != nil {
+		return fmt.Errorf("failed to parse image reference: %w", err)
+	}
+
+	registry := ref.Context().RegistryStr()
+	repository := ref.Context().RepositoryStr()
+
+	// Handle Docker Hub special case
+	if registry == "index.docker.io" {
+		registry = "registry-1.docker.io"
+	}
+
+	// Determine if this is a tag or digest reference
+	switch r := ref.(type) {
+	case name.Tag:
+		tag := r.TagStr()
+		logger.Info("Syncing manifest by tag", "registry", registry, "repository", repository, "tag", tag)
+
+		// Step 1: Get the manifest tag to resolve to a digest
+		resp, err := cidnClient.ManifestTag(ctx, registry, repository, tag)
+		if err != nil {
+			return fmt.Errorf("failed to get manifest tag: %w", err)
+		}
+
+		// Extract the digest from response headers
+		digest := resp.Headers["docker-content-digest"]
+		if digest == "" {
+			digest = resp.Headers["Docker-Content-Digest"]
+		}
+		if digest == "" {
+			return fmt.Errorf("no digest found in manifest tag response")
+		}
+
+		logger.Info("Resolved tag to digest", "tag", tag, "digest", digest)
+
+		// Step 2: Sync the manifest by digest
+		if err := cidnClient.ManifestDigest(ctx, registry, repository, digest); err != nil {
+			return fmt.Errorf("failed to sync manifest digest: %w", err)
+		}
+
+		logger.Info("Manifest synced successfully", "digest", digest)
+
+	case name.Digest:
+		digest := r.DigestStr()
+		logger.Info("Syncing manifest by digest", "registry", registry, "repository", repository, "digest", digest)
+
+		// Sync the manifest by digest
+		if err := cidnClient.ManifestDigest(ctx, registry, repository, digest); err != nil {
+			return fmt.Errorf("failed to sync manifest digest: %w", err)
+		}
+
+		logger.Info("Manifest synced successfully", "digest", digest)
+
+	default:
+		return fmt.Errorf("unsupported reference type: %T", ref)
+	}
+
+	return nil
+}

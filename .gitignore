@@ -25,7 +25,7 @@ go.work.sum
 .env
 
 # Binaries
-agent
-auth
-gateway
-sync
+/agent
+/auth
+/gateway
+/sync
