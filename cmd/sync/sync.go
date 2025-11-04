@@ -35,6 +35,7 @@ func main() {
 
 type flagpole struct {
 	Images                []string
+	Platforms             []string
 	StorageURL            string
 	Destination           string
 	Kubeconfig            string
@@ -67,6 +68,7 @@ Examples:
 	}
 
 	cmd.Flags().StringSliceVar(&flags.Images, "images", flags.Images, "OCI images to synchronize (format: registry/repository:tag or registry/repository@digest)")
+	cmd.Flags().StringSliceVar(&flags.Platforms, "platforms", flags.Platforms, "Platforms to sync (format: os/arch or os/arch/variant, e.g., linux/amd64,linux/arm64)")
 	cmd.Flags().StringVar(&flags.StorageURL, "storage-url", flags.StorageURL, "Storage driver URL for CIDN destination")
 	cmd.Flags().StringVar(&flags.Destination, "destination", flags.Destination, "CIDN destination name (defaults to storage URL scheme)")
 	cmd.Flags().StringVar(&flags.Kubeconfig, "kubeconfig", flags.Kubeconfig, "Path to the kubeconfig file")
@@ -126,7 +128,7 @@ func runE(ctx context.Context, flags *flagpole) error {
 	// Process each image
 	for _, imageRef := range flags.Images {
 		logger.Info("Processing image", "image", imageRef)
-		if err := syncImage(ctx, clientset, httpClient, imageRef, destination, logger); err != nil {
+		if err := syncImage(ctx, clientset, httpClient, imageRef, destination, flags.Platforms, logger); err != nil {
 			logger.Error("Failed to sync image", "image", imageRef, "error", err)
 			return fmt.Errorf("failed to sync image %s: %w", imageRef, err)
 		}
@@ -136,7 +138,7 @@ func runE(ctx context.Context, flags *flagpole) error {
 	return nil
 }
 
-func syncImage(ctx context.Context, clientset versioned.Interface, httpClient *http.Client, imageRef, destination string, logger *slog.Logger) error {
+func syncImage(ctx context.Context, clientset versioned.Interface, httpClient *http.Client, imageRef, destination string, platforms []string, logger *slog.Logger) error {
 	// Parse image reference
 	ref, err := name.ParseReference(imageRef)
 	if err != nil {
@@ -152,12 +154,23 @@ func syncImage(ctx context.Context, clientset versioned.Interface, httpClient *h
 	host := ref.Context().RegistryStr()
 	repository := ref.Context().RepositoryStr()
 	manifestDigest := desc.Digest.String()
+	
+	// Check if this is a tag or digest reference
+	_, isTag := ref.(name.Tag)
 
-	logger.Info("Image details", "host", host, "repository", repository, "digest", manifestDigest)
+	logger.Info("Image details", "host", host, "repository", repository, "digest", manifestDigest, "isTag", isTag)
 
-	// Create Blob for the manifest
-	if err := createManifestBlob(ctx, clientset, host, repository, manifestDigest, destination, logger); err != nil {
-		return fmt.Errorf("failed to create manifest blob: %w", err)
+	// For tag-based references, create Chunk; for digest-based, create Blob
+	if isTag {
+		// Use Chunk for tag-based manifest
+		if err := createManifestChunk(ctx, clientset, host, repository, ref.Identifier(), logger); err != nil {
+			return fmt.Errorf("failed to create manifest chunk: %w", err)
+		}
+	} else {
+		// Use Blob for digest-based manifest
+		if err := createManifestBlob(ctx, clientset, host, repository, manifestDigest, destination, logger); err != nil {
+			return fmt.Errorf("failed to create manifest blob: %w", err)
+		}
 	}
 
 	// Parse manifest to get layer blobs
@@ -168,23 +181,43 @@ func syncImage(ctx context.Context, clientset versioned.Interface, httpClient *h
 		if indexErr != nil {
 			return fmt.Errorf("failed to parse as image or index: image error: %w, index error: %w", err, indexErr)
 		}
-		return syncImageIndex(ctx, clientset, httpClient, index, host, repository, destination, logger)
+		return syncImageIndex(ctx, clientset, httpClient, index, host, repository, destination, platforms, logger)
 	}
 
 	return syncImageManifest(ctx, clientset, manifest, host, repository, destination, logger)
 }
 
-func syncImageIndex(ctx context.Context, clientset versioned.Interface, httpClient *http.Client, index containerregistry.ImageIndex, host, repository, destination string, logger *slog.Logger) error {
+func syncImageIndex(ctx context.Context, clientset versioned.Interface, httpClient *http.Client, index containerregistry.ImageIndex, host, repository, destination string, platforms []string, logger *slog.Logger) error {
 	indexManifest, err := index.IndexManifest()
 	if err != nil {
 		return fmt.Errorf("failed to get index manifest: %w", err)
 	}
 
+	// Build platform filter map if specified
+	platformFilter := make(map[string]bool)
+	if len(platforms) > 0 {
+		for _, p := range platforms {
+			platformFilter[p] = true
+		}
+	}
+
 	// Process each manifest in the index
 	for _, desc := range indexManifest.Manifests {
+		// Check platform filter
+		if len(platformFilter) > 0 && desc.Platform != nil {
+			platformStr := fmt.Sprintf("%s/%s", desc.Platform.OS, desc.Platform.Architecture)
+			if desc.Platform.Variant != "" {
+				platformStr = fmt.Sprintf("%s/%s", platformStr, desc.Platform.Variant)
+			}
+			if !platformFilter[platformStr] {
+				logger.Info("Skipping platform", "digest", desc.Digest.String(), "platform", platformStr)
+				continue
+			}
+		}
+
 		logger.Info("Processing manifest from index", "digest", desc.Digest.String(), "platform", desc.Platform)
 
-		// Create blob for this manifest
+		// Create blob for this manifest (always use Blob for digest-based manifests in index)
 		manifestDigest := desc.Digest.String()
 		if err := createManifestBlob(ctx, clientset, host, repository, manifestDigest, destination, logger); err != nil {
 			logger.Warn("Failed to create manifest blob from index", "digest", manifestDigest, "error", err)
@@ -252,6 +285,54 @@ func syncImageManifest(ctx context.Context, clientset versioned.Interface, img c
 // getBearerName constructs the bearer name from host and repository
 func getBearerName(host, repository string) string {
 	return fmt.Sprintf("%s:%s", host, strings.ReplaceAll(repository, "/", ":"))
+}
+
+// createManifestChunk creates a CIDN Chunk resource for a tag-based manifest
+func createManifestChunk(ctx context.Context, clientset versioned.Interface, host, repository, tag string, logger *slog.Logger) error {
+	url := fmt.Sprintf("https://%s/v2/%s/manifests/%s", host, repository, tag)
+	chunkName := fmt.Sprintf("manifest:%s:%s:%s", host, strings.ReplaceAll(repository, "/", ":"), tag)
+	
+	chunks := clientset.TaskV1alpha1().Chunks()
+
+	// Check if chunk already exists
+	_, err := chunks.Get(ctx, chunkName, metav1.GetOptions{})
+	if err == nil {
+		logger.Info("Manifest chunk already exists", "name", chunkName)
+		return nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("error checking chunk: %w", err)
+	}
+
+	// Create the chunk
+	_, err = chunks.Create(ctx, &v1alpha1.Chunk{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: chunkName,
+		},
+		Spec: v1alpha1.ChunkSpec{
+			MaximumRetry: 3,
+			Source: v1alpha1.ChunkHTTP{
+				Request: v1alpha1.ChunkHTTPRequest{
+					Method: http.MethodGet,
+					URL:    url,
+					Headers: map[string]string{
+						"Accept": "application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json",
+					},
+				},
+				Response: v1alpha1.ChunkHTTPResponse{
+					StatusCode: http.StatusOK,
+				},
+			},
+			BearerName: getBearerName(host, repository),
+		},
+	}, metav1.CreateOptions{})
+
+	if err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("failed to create manifest chunk: %w", err)
+	}
+
+	logger.Info("Created manifest chunk", "name", chunkName, "tag", tag)
+	return nil
 }
 
 // blobParams holds common parameters for blob creation

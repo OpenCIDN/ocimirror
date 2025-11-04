@@ -83,6 +83,17 @@ sync --images docker.io/library/nginx:latest,docker.io/library/alpine:3.18 \
 
 ### Advanced Options
 
+Synchronize specific platforms:
+
+``` bash
+sync --images docker.io/library/nginx:latest \
+     --platforms linux/amd64,linux/arm64 \
+     --storage-url s3://my-bucket/cache \
+     --kubeconfig ~/.kube/config
+```
+
+With authentication:
+
 ``` bash
 sync --images ghcr.io/org/app:v1.0 \
      --storage-url s3://my-bucket/cache \
@@ -94,6 +105,7 @@ sync --images ghcr.io/org/app:v1.0 \
 
 Available flags:
 - `--images`: OCI images to synchronize (required, comma-separated)
+- `--platforms`: Platforms to sync (optional, format: os/arch or os/arch/variant, e.g., linux/amd64,linux/arm64)
 - `--storage-url`: Storage driver URL (required, e.g., s3://bucket/path)
 - `--destination`: CIDN destination name (defaults to storage URL scheme)
 - `--kubeconfig`: Path to kubeconfig file
