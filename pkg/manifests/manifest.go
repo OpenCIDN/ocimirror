@@ -106,7 +106,9 @@ func (c *Manifests) Serve(rw http.ResponseWriter, r *http.Request, info *PathInf
 		if c.cidn.Client != nil {
 			_, err := c.cacheManifestWithCIDN(info)
 			if err != nil {
-				// When CIDN is enabled, don't use in-memory cache
+				// When CIDN is enabled, errors during recaching are logged but not fatal
+				// since we'll attempt to serve from existing storage
+				c.logger.Debug("recache manifest with CIDN failed, will try serving from storage", "info", info, "error", err)
 			}
 		} else {
 			// Synchronously cache the manifest
@@ -148,7 +150,6 @@ func (c *Manifests) Serve(rw http.ResponseWriter, r *http.Request, info *PathInf
 				}
 
 				c.logger.Warn("failed to cache manifest with cidn", "info", info, "error", err)
-				// When CIDN is enabled, don't use in-memory cache
 				utils.ServeError(rw, r, err, sc)
 				return
 			}
@@ -298,6 +299,8 @@ func (c *Manifests) cacheManifest(info *PathInfo) (int, error) {
 	return 0, nil
 }
 
+// cacheManifestWithCIDN uses CIDN to cache manifests.
+// When using CIDN, the informer acts as the cache, so no in-memory cache operations are needed.
 func (c *Manifests) cacheManifestWithCIDN(info *PathInfo) (int, error) {
 	ctx := context.Background()
 
@@ -315,7 +318,6 @@ func (c *Manifests) cacheManifestWithCIDN(info *PathInfo) (int, error) {
 		err = c.cache.RelinkManifest(ctx, info.Host, info.Image, info.Manifests, digest)
 		if err == nil {
 			c.logger.Info("relink manifest", "info", info)
-			// When CIDN is enabled, don't use in-memory cache
 			return 0, nil
 		}
 
@@ -326,7 +328,6 @@ func (c *Manifests) cacheManifestWithCIDN(info *PathInfo) (int, error) {
 		err = c.cache.RelinkManifest(ctx, info.Host, info.Image, info.Manifests, digest)
 		if err == nil {
 			c.logger.Info("relink manifest", "info", info)
-			// When CIDN is enabled, don't use in-memory cache
 			return 0, nil
 		}
 
@@ -339,7 +340,6 @@ func (c *Manifests) cacheManifestWithCIDN(info *PathInfo) (int, error) {
 		err = c.cache.RelinkManifest(ctx, info.Host, info.Image, "", info.Manifests)
 		if err == nil {
 			c.logger.Info("relink manifest", "info", info)
-			// When CIDN is enabled, don't use in-memory cache
 			return 0, nil
 		}
 
