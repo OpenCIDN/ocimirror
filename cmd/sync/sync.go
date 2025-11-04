@@ -249,22 +249,63 @@ func syncImageManifest(ctx context.Context, clientset versioned.Interface, img c
 	return nil
 }
 
-func createManifestBlob(ctx context.Context, clientset versioned.Interface, host, repository, digest, destination string, logger *slog.Logger) error {
-	sourceURL := fmt.Sprintf("https://%s/v2/%s/manifests/%s", host, repository, digest)
+// getBearerName constructs the bearer name from host and repository
+func getBearerName(host, repository string) string {
+	return fmt.Sprintf("%s:%s", host, strings.ReplaceAll(repository, "/", ":"))
+}
+
+// blobParams holds common parameters for blob creation
+type blobParams struct {
+	sourceURL          string
+	displayName        string
+	maximumRunning     int64
+	chunksNumber       int64
+	minimumChunkSize   int64
+	blobType           string // "manifest" or "layer"
+}
+
+// createBlob is a helper function that creates a CIDN Blob resource
+func createBlob(ctx context.Context, clientset versioned.Interface, host, repository, digest, destination string, params blobParams, logger *slog.Logger) error {
 	cachePath := registry.BlobCachePath(digest)
 	blobName := digest
-	displayName := fmt.Sprintf("%s/%s@%s", host, repository, digest)
+	displayName := params.displayName
 
 	blobs := clientset.TaskV1alpha1().Blobs()
 
 	// Check if blob already exists
 	_, err := blobs.Get(ctx, blobName, metav1.GetOptions{})
 	if err == nil {
-		logger.Info("Manifest blob already exists", "name", blobName)
+		logger.Info(fmt.Sprintf("%s blob already exists", params.blobType), "name", blobName)
 		return nil
 	}
 	if !apierrors.IsNotFound(err) {
 		return fmt.Errorf("error checking blob: %w", err)
+	}
+
+	// Build blob spec
+	spec := v1alpha1.BlobSpec{
+		MaximumRunning: params.maximumRunning,
+		Source: []v1alpha1.BlobSource{
+			{
+				URL:        params.sourceURL,
+				BearerName: getBearerName(host, repository),
+			},
+		},
+		Destination: []v1alpha1.BlobDestination{
+			{
+				Name:         destination,
+				Path:         cachePath,
+				SkipIfExists: true,
+			},
+		},
+		ContentSha256: registry.CleanDigest(digest),
+	}
+
+	if params.chunksNumber > 0 {
+		spec.ChunksNumber = params.chunksNumber
+	}
+	if params.minimumChunkSize > 0 {
+		spec.MinimumChunkSize = params.minimumChunkSize
 	}
 
 	// Create the blob
@@ -275,84 +316,33 @@ func createManifestBlob(ctx context.Context, clientset versioned.Interface, host
 				v1alpha1.BlobDisplayNameAnnotation: displayName,
 			},
 		},
-		Spec: v1alpha1.BlobSpec{
-			MaximumRunning: 1,
-			ChunksNumber:   1,
-			Source: []v1alpha1.BlobSource{
-				{
-					URL:        sourceURL,
-					BearerName: fmt.Sprintf("%s:%s", host, strings.ReplaceAll(repository, "/", ":")),
-				},
-			},
-			Destination: []v1alpha1.BlobDestination{
-				{
-					Name:         destination,
-					Path:         cachePath,
-					SkipIfExists: true,
-				},
-			},
-			ContentSha256: registry.CleanDigest(digest),
-		},
+		Spec: spec,
 	}, metav1.CreateOptions{})
 
 	if err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("failed to create manifest blob: %w", err)
+		return fmt.Errorf("failed to create %s blob: %w", params.blobType, err)
 	}
 
-	logger.Info("Created manifest blob", "name", blobName, "display", displayName)
+	logger.Info(fmt.Sprintf("Created %s blob", params.blobType), "name", blobName, "display", displayName)
 	return nil
 }
 
+func createManifestBlob(ctx context.Context, clientset versioned.Interface, host, repository, digest, destination string, logger *slog.Logger) error {
+	return createBlob(ctx, clientset, host, repository, digest, destination, blobParams{
+		sourceURL:      fmt.Sprintf("https://%s/v2/%s/manifests/%s", host, repository, digest),
+		displayName:    fmt.Sprintf("%s/%s@%s", host, repository, digest),
+		maximumRunning: 1,
+		chunksNumber:   1,
+		blobType:       "manifest",
+	}, logger)
+}
+
 func createLayerBlob(ctx context.Context, clientset versioned.Interface, host, repository, digest, destination string, logger *slog.Logger) error {
-	sourceURL := fmt.Sprintf("https://%s/v2/%s/blobs/%s", host, repository, digest)
-	cachePath := registry.BlobCachePath(digest)
-	blobName := digest
-	displayName := fmt.Sprintf("%s/%s@%s", host, repository, digest)
-
-	blobs := clientset.TaskV1alpha1().Blobs()
-
-	// Check if blob already exists
-	_, err := blobs.Get(ctx, blobName, metav1.GetOptions{})
-	if err == nil {
-		logger.Info("Layer blob already exists", "name", blobName)
-		return nil
-	}
-	if !apierrors.IsNotFound(err) {
-		return fmt.Errorf("error checking blob: %w", err)
-	}
-
-	// Create the blob
-	_, err = blobs.Create(ctx, &v1alpha1.Blob{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: blobName,
-			Annotations: map[string]string{
-				v1alpha1.BlobDisplayNameAnnotation: displayName,
-			},
-		},
-		Spec: v1alpha1.BlobSpec{
-			MaximumRunning:   3,
-			MinimumChunkSize: 128 * 1024 * 1024,
-			Source: []v1alpha1.BlobSource{
-				{
-					URL:        sourceURL,
-					BearerName: fmt.Sprintf("%s:%s", host, strings.ReplaceAll(repository, "/", ":")),
-				},
-			},
-			Destination: []v1alpha1.BlobDestination{
-				{
-					Name:         destination,
-					Path:         cachePath,
-					SkipIfExists: true,
-				},
-			},
-			ContentSha256: registry.CleanDigest(digest),
-		},
-	}, metav1.CreateOptions{})
-
-	if err != nil && !apierrors.IsAlreadyExists(err) {
-		return fmt.Errorf("failed to create layer blob: %w", err)
-	}
-
-	logger.Info("Created layer blob", "name", blobName, "display", displayName)
-	return nil
+	return createBlob(ctx, clientset, host, repository, digest, destination, blobParams{
+		sourceURL:        fmt.Sprintf("https://%s/v2/%s/blobs/%s", host, repository, digest),
+		displayName:      fmt.Sprintf("%s/%s@%s", host, repository, digest),
+		maximumRunning:   3,
+		minimumChunkSize: 128 * 1024 * 1024,
+		blobType:         "layer",
+	}, logger)
 }
