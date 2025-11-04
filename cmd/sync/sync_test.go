@@ -2,6 +2,8 @@ package main
 
 import (
 	"testing"
+
+	"github.com/OpenCIDN/ocimirror/pkg/sync"
 )
 
 func TestParseImageReference(t *testing.T) {
@@ -90,9 +92,9 @@ func TestParseImageReference(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotHost, gotImage, gotRef, gotDigest, err := parseImageReference(tt.imageRef)
+			gotHost, gotImage, gotRef, gotDigest, err := sync.ParseImageReference(tt.imageRef)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("parseImageReference() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("ParseImageReference() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if err != nil {
