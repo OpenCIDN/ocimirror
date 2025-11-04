@@ -92,18 +92,21 @@ func NewManifests(opts ...Option) (*Manifests, error) {
 }
 
 func (c *Manifests) Serve(rw http.ResponseWriter, r *http.Request, info *PathInfo, t *token.Token) {
-	done := c.tryFirstServeCachedManifest(rw, r, info, t)
-	if done {
-		return
+	// When CIDN is enabled, skip in-memory cache and use CIDN informer as cache
+	if c.cidn.Client == nil {
+		done := c.tryFirstServeCachedManifest(rw, r, info, t)
+		if done {
+			return
+		}
 	}
 
 	ok, _ := c.cache.StatManifest(r.Context(), info.Host, info.Image, info.Manifests)
 	if ok {
 		// Use CIDN for manifest syncing if configured
 		if c.cidn.Client != nil {
-			sc, err := c.cacheManifestWithCIDN(info)
+			_, err := c.cacheManifestWithCIDN(info)
 			if err != nil {
-				c.manifestCache.PutError(info, err, sc)
+				// When CIDN is enabled, don't use in-memory cache
 			}
 		} else {
 			// Synchronously cache the manifest
@@ -145,7 +148,7 @@ func (c *Manifests) Serve(rw http.ResponseWriter, r *http.Request, info *PathInf
 				}
 
 				c.logger.Warn("failed to cache manifest with cidn", "info", info, "error", err)
-				c.manifestCache.PutError(info, err, sc)
+				// When CIDN is enabled, don't use in-memory cache
 				utils.ServeError(rw, r, err, sc)
 				return
 			}
@@ -161,8 +164,16 @@ func (c *Manifests) Serve(rw http.ResponseWriter, r *http.Request, info *PathInf
 			}
 			c.logger.Info("finish caching manifest", "info", info)
 		}
-		if c.missServeCachedManifest(rw, r, info) {
-			return
+		if c.cidn.Client == nil {
+			// When CIDN is disabled, use in-memory cache
+			if c.missServeCachedManifest(rw, r, info) {
+				return
+			}
+		} else {
+			// When CIDN is enabled, skip in-memory cache and serve from storage directly
+			if c.serveCachedManifest(rw, r, info, false, "cidn") {
+				return
+			}
 		}
 	}
 
@@ -304,9 +315,7 @@ func (c *Manifests) cacheManifestWithCIDN(info *PathInfo) (int, error) {
 		err = c.cache.RelinkManifest(ctx, info.Host, info.Image, info.Manifests, digest)
 		if err == nil {
 			c.logger.Info("relink manifest", "info", info)
-			c.manifestCache.Put(info, cacheValue{
-				Digest: digest,
-			})
+			// When CIDN is enabled, don't use in-memory cache
 			return 0, nil
 		}
 
@@ -317,9 +326,7 @@ func (c *Manifests) cacheManifestWithCIDN(info *PathInfo) (int, error) {
 		err = c.cache.RelinkManifest(ctx, info.Host, info.Image, info.Manifests, digest)
 		if err == nil {
 			c.logger.Info("relink manifest", "info", info)
-			c.manifestCache.Put(info, cacheValue{
-				Digest: digest,
-			})
+			// When CIDN is enabled, don't use in-memory cache
 			return 0, nil
 		}
 
@@ -332,9 +339,7 @@ func (c *Manifests) cacheManifestWithCIDN(info *PathInfo) (int, error) {
 		err = c.cache.RelinkManifest(ctx, info.Host, info.Image, "", info.Manifests)
 		if err == nil {
 			c.logger.Info("relink manifest", "info", info)
-			c.manifestCache.Put(info, cacheValue{
-				Digest: info.Manifests,
-			})
+			// When CIDN is enabled, don't use in-memory cache
 			return 0, nil
 		}
 
@@ -437,7 +442,8 @@ func (c *Manifests) serveCachedManifest(rw http.ResponseWriter, r *http.Request,
 
 	length := strconv.FormatInt(int64(len(content)), 10)
 
-	if recache {
+	// When CIDN is enabled, don't use in-memory cache
+	if recache && c.cidn.Client == nil {
 		c.manifestCache.Put(info, cacheValue{
 			Digest:    digest,
 			MediaType: mediaType,

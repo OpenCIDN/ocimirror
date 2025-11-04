@@ -200,19 +200,22 @@ func (b *Blobs) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 func (b *Blobs) serveCache(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t *token.Token) bool {
 	ctx := r.Context()
 
-	value, ok := b.blobCache.Get(info.Blobs)
-	if ok {
-		if value.Error != nil {
-			utils.ServeError(rw, r, value.Error, 0)
+	// When CIDN is enabled, skip in-memory cache and use CIDN informer as cache
+	if b.cidn.Client == nil {
+		value, ok := b.blobCache.Get(info.Blobs)
+		if ok {
+			if value.Error != nil {
+				utils.ServeError(rw, r, value.Error, 0)
+				return true
+			}
+
+			if b.serveCachedBlobHead(rw, r, value.Size) {
+				return true
+			}
+
+			b.serveCachedBlob(rw, r, info, t, value.ModTime, value.Size)
 			return true
 		}
-
-		if b.serveCachedBlobHead(rw, r, value.Size) {
-			return true
-		}
-
-		b.serveCachedBlob(rw, r, info, t, value.ModTime, value.Size)
-		return true
 	}
 
 	stat, err := b.cache.StatBlob(ctx, info.Blobs)
@@ -407,7 +410,10 @@ func (b *Blobs) serveCachedBlobDirect(rw http.ResponseWriter, r *http.Request, i
 
 	http.ServeContent(rw, r, "", modTime, rs)
 
-	b.blobCache.Put(info.Blobs, modTime, size)
+	// When CIDN is enabled, don't use in-memory cache
+	if b.cidn.Client == nil {
+		b.blobCache.Put(info.Blobs, modTime, size)
+	}
 }
 
 func (b *Blobs) serveCachedBlobRedirect(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t *token.Token, modTime time.Time, size int64) {
@@ -419,12 +425,18 @@ func (b *Blobs) serveCachedBlobRedirect(rw http.ResponseWriter, r *http.Request,
 	u, err := b.cache.RedirectBlob(r.Context(), info.Blobs, referer)
 	if err != nil {
 		b.logger.Info("failed to redirect blob", "digest", info.Blobs, "error", err)
-		b.blobCache.Remove(info.Blobs)
+		// When CIDN is enabled, don't use in-memory cache
+		if b.cidn.Client == nil {
+			b.blobCache.Remove(info.Blobs)
+		}
 		utils.ServeError(rw, r, errcode.ErrorCodeUnknown, 0)
 		return
 	}
 
-	b.blobCache.Put(info.Blobs, modTime, size)
+	// When CIDN is enabled, don't use in-memory cache
+	if b.cidn.Client == nil {
+		b.blobCache.Put(info.Blobs, modTime, size)
+	}
 
 	b.logger.Info("Cache hit", "digest", info.Blobs, "url", u)
 	http.Redirect(rw, r, u, http.StatusTemporaryRedirect)
