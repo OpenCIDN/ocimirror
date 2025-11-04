@@ -13,9 +13,11 @@ This project builds upon [CRProxy](https://github.com/DaoCloud/crproxy) with enh
 
 ## Usage
 
+### Mirror Mode
+
 To use ocimirror, add a prefix to your container image references
 
-### Docker
+#### Docker
 
 Add your mirror prefix to the image reference:
 
@@ -29,7 +31,7 @@ For example, using `m.daocloud.io` as the mirror:
 docker pull m.daocloud.io/docker.io/library/busybox
 ```
 
-### Kubernetes
+#### Kubernetes
 
 Add your mirror prefix to image references in your manifests:
 
@@ -42,3 +44,22 @@ For example, using `m.daocloud.io` as the mirror:
 ``` yaml
 image: m.daocloud.io/docker.io/library/busybox
 ```
+
+### Active Synchronization
+
+Proactively synchronize OCI images using CIDN resources:
+
+``` bash
+# Sync a specific image tag
+./sync --storage-url s3://mybucket --kubeconfig ~/.kube/config docker.io/library/nginx:latest
+
+# Sync a specific image digest
+./sync --storage-url s3://mybucket --kubeconfig ~/.kube/config docker.io/library/nginx@sha256:abc123...
+
+# Sync multiple images
+./sync --storage-url s3://mybucket --kubeconfig ~/.kube/config \
+  ghcr.io/owner/repo:v1.0.0 \
+  quay.io/org/image:latest
+```
+
+The sync command creates CIDN resources to proactively synchronize images to your cache, eliminating the need to wait for the first pull request.
