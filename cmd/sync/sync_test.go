@@ -2,103 +2,114 @@ package main
 
 import (
 	"testing"
-
-	"github.com/google/go-containerregistry/pkg/name"
 )
 
-func TestImageReferenceParsing(t *testing.T) {
+func TestParseImageReference(t *testing.T) {
 	tests := []struct {
 		name       string
 		imageRef   string
-		wantReg    string
-		wantRepo   string
-		wantTag    string
-		wantDigest string
+		wantHost   string
+		wantImage  string
+		wantRef    string
+		wantDigest bool
 		wantErr    bool
 	}{
 		{
-			name:     "docker hub library image with tag",
-			imageRef: "docker.io/library/nginx:latest",
-			wantReg:  "index.docker.io",
-			wantRepo: "library/nginx",
-			wantTag:  "latest",
+			name:       "docker hub library image with tag",
+			imageRef:   "docker.io/library/nginx:latest",
+			wantHost:   "docker.io",
+			wantImage:  "library/nginx",
+			wantRef:    "latest",
+			wantDigest: false,
 		},
 		{
-			name:     "docker hub short form",
-			imageRef: "nginx:latest",
-			wantReg:  "index.docker.io",
-			wantRepo: "library/nginx",
-			wantTag:  "latest",
+			name:       "docker hub short form",
+			imageRef:   "nginx:latest",
+			wantHost:   "docker.io",
+			wantImage:  "nginx",
+			wantRef:    "latest",
+			wantDigest: false,
 		},
 		{
-			name:     "docker hub user image",
-			imageRef: "docker.io/myuser/myimage:v1.0",
-			wantReg:  "index.docker.io",
-			wantRepo: "myuser/myimage",
-			wantTag:  "v1.0",
+			name:       "docker hub user image",
+			imageRef:   "docker.io/myuser/myimage:v1.0",
+			wantHost:   "docker.io",
+			wantImage:  "myuser/myimage",
+			wantRef:    "v1.0",
+			wantDigest: false,
 		},
 		{
 			name:       "ghcr with digest",
 			imageRef:   "ghcr.io/owner/repo@sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-			wantReg:    "ghcr.io",
-			wantRepo:   "owner/repo",
-			wantDigest: "sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+			wantHost:   "ghcr.io",
+			wantImage:  "owner/repo",
+			wantRef:    "sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+			wantDigest: true,
 		},
 		{
-			name:     "gcr image",
-			imageRef: "gcr.io/project/image:tag",
-			wantReg:  "gcr.io",
-			wantRepo: "project/image",
-			wantTag:  "tag",
+			name:       "gcr image",
+			imageRef:   "gcr.io/project/image:tag",
+			wantHost:   "gcr.io",
+			wantImage:  "project/image",
+			wantRef:    "tag",
+			wantDigest: false,
 		},
 		{
-			name:     "quay.io image",
-			imageRef: "quay.io/organization/repository:latest",
-			wantReg:  "quay.io",
-			wantRepo: "organization/repository",
-			wantTag:  "latest",
+			name:       "quay.io image",
+			imageRef:   "quay.io/organization/repository:latest",
+			wantHost:   "quay.io",
+			wantImage:  "organization/repository",
+			wantRef:    "latest",
+			wantDigest: false,
+		},
+		{
+			name:       "image without tag defaults to latest",
+			imageRef:   "nginx",
+			wantHost:   "docker.io",
+			wantImage:  "nginx",
+			wantRef:    "latest",
+			wantDigest: false,
+		},
+		{
+			name:       "multi-level image path",
+			imageRef:   "gcr.io/project/team/app:v1.0.0",
+			wantHost:   "gcr.io",
+			wantImage:  "project/team/app",
+			wantRef:    "v1.0.0",
+			wantDigest: false,
+		},
+		{
+			name:       "localhost registry",
+			imageRef:   "localhost:5000/myimage:latest",
+			wantHost:   "localhost:5000",
+			wantImage:  "myimage",
+			wantRef:    "latest",
+			wantDigest: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ref, err := name.ParseReference(tt.imageRef, name.WeakValidation)
+			gotHost, gotImage, gotRef, gotDigest, err := parseImageReference(tt.imageRef)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("ParseReference() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("parseImageReference() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if err != nil {
 				return
 			}
 
-			gotReg := ref.Context().RegistryStr()
-			gotRepo := ref.Context().RepositoryStr()
-
-			if gotReg != tt.wantReg {
-				t.Errorf("registry = %v, want %v", gotReg, tt.wantReg)
+			if gotHost != tt.wantHost {
+				t.Errorf("host = %v, want %v", gotHost, tt.wantHost)
 			}
-			if gotRepo != tt.wantRepo {
-				t.Errorf("repository = %v, want %v", gotRepo, tt.wantRepo)
+			if gotImage != tt.wantImage {
+				t.Errorf("image = %v, want %v", gotImage, tt.wantImage)
 			}
-
-			if tt.wantTag != "" {
-				if tag, ok := ref.(name.Tag); ok {
-					if tag.TagStr() != tt.wantTag {
-						t.Errorf("tag = %v, want %v", tag.TagStr(), tt.wantTag)
-					}
-				} else {
-					t.Errorf("expected tag reference, got %T", ref)
-				}
+			if gotRef != tt.wantRef {
+				t.Errorf("reference = %v, want %v", gotRef, tt.wantRef)
 			}
-
-			if tt.wantDigest != "" {
-				if digest, ok := ref.(name.Digest); ok {
-					if digest.DigestStr() != tt.wantDigest {
-						t.Errorf("digest = %v, want %v", digest.DigestStr(), tt.wantDigest)
-					}
-				} else {
-					t.Errorf("expected digest reference, got %T", ref)
-				}
+			if gotDigest != tt.wantDigest {
+				t.Errorf("isDigest = %v, want %v", gotDigest, tt.wantDigest)
 			}
 		})
 	}

@@ -60,6 +60,16 @@ Proactively synchronize OCI images using CIDN resources:
 ./sync --storage-url s3://mybucket --kubeconfig ~/.kube/config \
   ghcr.io/owner/repo:v1.0.0 \
   quay.io/org/image:latest
+
+# Sync a specific platform (e.g., for multi-arch images)
+./sync --storage-url s3://mybucket --kubeconfig ~/.kube/config \
+  --platform linux/amd64 \
+  docker.io/library/nginx:latest
+
+# Sync ARM64 platform
+./sync --storage-url s3://mybucket --kubeconfig ~/.kube/config \
+  --platform linux/arm64 \
+  ghcr.io/owner/repo:v1.0.0
 ```
 
-The sync command creates CIDN resources to proactively synchronize images to your cache, eliminating the need to wait for the first pull request.
+The sync command creates CIDN resources to proactively synchronize images to your cache, eliminating the need to wait for the first pull request. When a platform is specified, the command will parse manifest lists and sync the platform-specific manifest along with its config and layer blobs.
