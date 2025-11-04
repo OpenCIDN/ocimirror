@@ -13,21 +13,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/OpenCIDN/cidn/pkg/apis/task/v1alpha1"
 	"github.com/OpenCIDN/cidn/pkg/clientset/versioned"
 	informers "github.com/OpenCIDN/cidn/pkg/informers/externalversions/task/v1alpha1"
-	"github.com/OpenCIDN/ocimirror/internal/registry"
 	"github.com/OpenCIDN/ocimirror/internal/seeker"
 	"github.com/OpenCIDN/ocimirror/internal/throttled"
 	"github.com/OpenCIDN/ocimirror/internal/utils"
 	"github.com/OpenCIDN/ocimirror/pkg/cache"
+	"github.com/OpenCIDN/ocimirror/pkg/cidn"
 	"github.com/OpenCIDN/ocimirror/pkg/token"
 	"github.com/docker/distribution/registry/api/errcode"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 	"golang.org/x/time/rate"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	k8scache "k8s.io/client-go/tools/cache"
 )
 
 var (
@@ -52,9 +48,7 @@ type Blobs struct {
 
 	noRedirect bool
 
-	cidnClient       versioned.Interface
-	cidnBlobInformer informers.BlobInformer
-	cidnDestination  string
+	cidn cidn.CIDN
 }
 
 type Option func(c *Blobs) error
@@ -106,9 +100,9 @@ func WithBlobCacheDuration(blobCacheDuration time.Duration) Option {
 
 func WithCIDNClient(cidnClient versioned.Interface, blobInformer informers.BlobInformer, destination string) Option {
 	return func(c *Blobs) error {
-		c.cidnClient = cidnClient
-		c.cidnBlobInformer = blobInformer
-		c.cidnDestination = destination
+		c.cidn.Client = cidnClient
+		c.cidn.BlobInformer = blobInformer
+		c.cidn.Destination = destination
 		return nil
 	}
 }
@@ -239,8 +233,8 @@ func (b *Blobs) Serve(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t
 	}
 
 	// Use CIDN for blob syncing if configured
-	if b.cidnClient != nil {
-		err := b.cacheBlobWithCIDN(r.Context(), info)
+	if b.cidn.Client != nil {
+		err := b.cidn.Blob(r.Context(), info.Host, info.Image, info.Blobs)
 		if err != nil {
 			errStr := err.Error()
 			if strings.Contains(errStr, "status code: got 404") {
@@ -359,117 +353,6 @@ func (b *Blobs) cacheBlob(info *BlobInfo) (int, error) {
 	}
 	b.blobCache.Put(info.Blobs, stat.ModTime(), size)
 	return 0, nil
-}
-
-func (b *Blobs) cacheBlobWithCIDN(ctx context.Context, info *BlobInfo) error {
-	sourceURL := fmt.Sprintf("https://%s/v2/%s/blobs/%s", info.Host, info.Image, info.Blobs)
-	cachePath := registry.BlobCachePath(info.Blobs)
-
-	blobName := info.Blobs
-	blobs := b.cidnClient.TaskV1alpha1().Blobs()
-
-	blob, err := b.cidnBlobInformer.Lister().Get(blobName)
-	if err != nil {
-		if !apierrors.IsNotFound(err) {
-			b.logger.Warn("error getting blob from informer", "error", err)
-			return err
-		}
-
-		displayName := fmt.Sprintf("%s/%s@%s", info.Host, info.Image, info.Blobs)
-
-		blob, err = blobs.Create(ctx, &v1alpha1.Blob{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: blobName,
-				Annotations: map[string]string{
-					v1alpha1.BlobDisplayNameAnnotation: displayName,
-				},
-			},
-			Spec: v1alpha1.BlobSpec{
-				MaximumRunning:   3,
-				MinimumChunkSize: 128 * 1024 * 1024,
-				Source: []v1alpha1.BlobSource{
-					{
-						URL:        sourceURL,
-						BearerName: fmt.Sprintf("%s:%s", info.Host, strings.ReplaceAll(info.Image, "/", ":")),
-					},
-				},
-				Destination: []v1alpha1.BlobDestination{
-					{
-						Name:         b.cidnDestination,
-						Path:         cachePath,
-						SkipIfExists: true,
-					},
-				},
-				ContentSha256: registry.CleanDigest(info.Blobs),
-			},
-		}, metav1.CreateOptions{})
-		if err != nil && !apierrors.IsAlreadyExists(err) {
-			return err
-		}
-	} else {
-		switch blob.Status.Phase {
-		case v1alpha1.BlobPhaseSucceeded:
-			return nil
-		case v1alpha1.BlobPhaseFailed:
-			errorMsg := "blob sync failed"
-			for _, condition := range blob.Status.Conditions {
-				if condition.Message != "" {
-					errorMsg = condition.Message
-					break
-				}
-			}
-			return fmt.Errorf("CIDN blob sync failed: %s", errorMsg)
-		}
-	}
-
-	// Create a channel to receive blob status updates
-	statusChan := make(chan *v1alpha1.Blob, 1)
-	defer close(statusChan)
-
-	// Add event handler to watch for blob status changes
-	handler := k8scache.ResourceEventHandlerFuncs{
-		UpdateFunc: func(oldObj, newObj interface{}) {
-			newBlob, ok := newObj.(*v1alpha1.Blob)
-			if !ok {
-				return
-			}
-			if newBlob.Name == blobName {
-				select {
-				case statusChan <- newBlob:
-				default:
-				}
-			}
-		},
-	}
-
-	registration, err := b.cidnBlobInformer.Informer().AddEventHandler(handler)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = b.cidnBlobInformer.Informer().RemoveEventHandler(registration)
-	}()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case blob := <-statusChan:
-			switch blob.Status.Phase {
-			case v1alpha1.BlobPhaseSucceeded:
-				return nil
-			case v1alpha1.BlobPhaseFailed:
-				errorMsg := "blob sync failed"
-				for _, condition := range blob.Status.Conditions {
-					if condition.Message != "" {
-						errorMsg = condition.Message
-						break
-					}
-				}
-				return fmt.Errorf("CIDN blob sync failed: %s", errorMsg)
-			}
-		}
-	}
 }
 
 func (b *Blobs) serveCachedBlobHead(rw http.ResponseWriter, r *http.Request, size int64) bool {

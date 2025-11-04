@@ -5,6 +5,8 @@ import (
 	"strings"
 )
 
+var OCIAcceptsValue = "application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json"
+
 func CleanDigest(blob string) string {
 	return strings.TrimPrefix(blob, "sha256:")
 }

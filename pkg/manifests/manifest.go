@@ -13,18 +13,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/OpenCIDN/cidn/pkg/apis/task/v1alpha1"
 	"github.com/OpenCIDN/cidn/pkg/clientset/versioned"
 	informers "github.com/OpenCIDN/cidn/pkg/informers/externalversions/task/v1alpha1"
 	"github.com/OpenCIDN/ocimirror/internal/registry"
 	"github.com/OpenCIDN/ocimirror/internal/utils"
 	"github.com/OpenCIDN/ocimirror/pkg/cache"
+	"github.com/OpenCIDN/ocimirror/pkg/cidn"
 	"github.com/OpenCIDN/ocimirror/pkg/token"
 	"github.com/docker/distribution/registry/api/errcode"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	k8scache "k8s.io/client-go/tools/cache"
 )
 
 type Manifests struct {
@@ -35,14 +32,7 @@ type Manifests struct {
 	manifestCacheDuration time.Duration
 	manifestCache         *manifestCache
 
-	acceptsItems []string
-	acceptsStr   string
-	accepts      map[string]struct{}
-
-	cidnClient        versioned.Interface
-	cidnChunkInformer informers.ChunkInformer
-	cidnBlobInformer  informers.BlobInformer
-	cidnDestination   string
+	cidn cidn.CIDN
 }
 
 type Option func(c *Manifests)
@@ -76,31 +66,19 @@ func WithCache(cache *cache.Cache) Option {
 
 func WithCIDNClient(cidnClient versioned.Interface, cidnBlobInformer informers.BlobInformer, chunkInformer informers.ChunkInformer, destination string) Option {
 	return func(c *Manifests) {
-		c.cidnClient = cidnClient
-		c.cidnChunkInformer = chunkInformer
-		c.cidnBlobInformer = cidnBlobInformer
-		c.cidnDestination = destination
+		c.cidn.Client = cidnClient
+		c.cidn.ChunkInformer = chunkInformer
+		c.cidn.BlobInformer = cidnBlobInformer
+		c.cidn.Destination = destination
 	}
 }
 
 func NewManifests(opts ...Option) (*Manifests, error) {
 	c := &Manifests{
-		logger:     slog.Default(),
-		httpClient: http.DefaultClient,
-		acceptsItems: []string{
-			"application/vnd.oci.image.index.v1+json",
-			"application/vnd.docker.distribution.manifest.list.v2+json",
-			"application/vnd.oci.image.manifest.v1+json",
-			"application/vnd.docker.distribution.manifest.v2+json",
-		},
-		accepts:               map[string]struct{}{},
+		logger:                slog.Default(),
+		httpClient:            http.DefaultClient,
 		manifestCacheDuration: time.Minute,
 	}
-
-	for _, item := range c.acceptsItems {
-		c.accepts[item] = struct{}{}
-	}
-	c.acceptsStr = strings.Join(c.acceptsItems, ",")
 
 	for _, opt := range opts {
 		opt(c)
@@ -122,7 +100,7 @@ func (c *Manifests) Serve(rw http.ResponseWriter, r *http.Request, info *PathInf
 	ok, _ := c.cache.StatManifest(r.Context(), info.Host, info.Image, info.Manifests)
 	if ok {
 		// Use CIDN for manifest syncing if configured
-		if c.cidnClient != nil {
+		if c.cidn.Client != nil {
 			sc, err := c.cacheManifestWithCIDN(info)
 			if err != nil {
 				c.manifestCache.PutError(info, err, sc)
@@ -139,7 +117,7 @@ func (c *Manifests) Serve(rw http.ResponseWriter, r *http.Request, info *PathInf
 		}
 	} else {
 		// Use CIDN for manifest syncing if configured
-		if c.cidnClient != nil {
+		if c.cidn.Client != nil {
 			// Synchronously cache the manifest
 			sc, err := c.cacheManifestWithCIDN(info)
 			if err != nil {
@@ -206,7 +184,7 @@ func (c *Manifests) cacheManifest(info *PathInfo) (int, error) {
 			return 0, err
 		}
 		// Never trust a client's Accept !!!
-		forwardReq.Header.Set("Accept", c.acceptsStr)
+		forwardReq.Header.Set("Accept", registry.OCIAcceptsValue)
 
 		resp, err := c.httpClient.Do(forwardReq)
 		if err != nil {
@@ -250,7 +228,7 @@ func (c *Manifests) cacheManifest(info *PathInfo) (int, error) {
 		return 0, err
 	}
 	// Never trust a client's Accept !!!
-	forwardReq.Header.Set("Accept", c.acceptsStr)
+	forwardReq.Header.Set("Accept", registry.OCIAcceptsValue)
 
 	resp, err := c.httpClient.Do(forwardReq)
 	if err != nil {
@@ -313,7 +291,7 @@ func (c *Manifests) cacheManifestWithCIDN(info *PathInfo) (int, error) {
 	ctx := context.Background()
 
 	if !info.IsDigestManifests && info.Host != "ollama.com" {
-		resp, err := c.requestWithCIDN(ctx, info, http.MethodHead)
+		resp, err := c.cidn.ManifestTag(ctx, info.Host, info.Image, info.Manifests)
 		if err != nil {
 			return 0, fmt.Errorf("request with cidn error: %w", err)
 		}
@@ -332,12 +310,7 @@ func (c *Manifests) cacheManifestWithCIDN(info *PathInfo) (int, error) {
 			return 0, nil
 		}
 
-		err = c.cacheBlobWithCIDN(ctx, &PathInfo{
-			Host:              info.Host,
-			Image:             info.Image,
-			Manifests:         digest,
-			IsDigestManifests: true,
-		})
+		err = c.cidn.ManifestDigest(ctx, info.Host, info.Image, digest)
 		if err != nil {
 			return 0, fmt.Errorf("cache blob with cidn error: %w", err)
 		}
@@ -352,7 +325,7 @@ func (c *Manifests) cacheManifestWithCIDN(info *PathInfo) (int, error) {
 
 		return 0, fmt.Errorf("failed to relink manifest after caching blob with CIDN")
 	} else {
-		err := c.cacheBlobWithCIDN(ctx, info)
+		err := c.cidn.ManifestDigest(ctx, info.Host, info.Image, info.Manifests)
 		if err != nil {
 			return 0, fmt.Errorf("cache blob with cidn error: %w", err)
 		}
@@ -366,255 +339,6 @@ func (c *Manifests) cacheManifestWithCIDN(info *PathInfo) (int, error) {
 		}
 
 		return 0, fmt.Errorf("failed to relink manifest after caching blob with CIDN")
-	}
-}
-
-type response struct {
-	StatusCode int
-	Headers    map[string]string
-	Body       []byte
-}
-
-func (c *Manifests) requestWithCIDN(ctx context.Context, info *PathInfo, method string) (*response, error) {
-	u := &url.URL{
-		Scheme: "https",
-		Host:   info.Host,
-		Path:   fmt.Sprintf("/v2/%s/manifests/%s", info.Image, info.Manifests),
-	}
-
-	url := u.String()
-
-	chunkName := fmt.Sprintf("manifest:%s:%s:%s", info.Host, strings.ReplaceAll(info.Image, "/", ":"), info.Manifests)
-	chunks := c.cidnClient.TaskV1alpha1().Chunks()
-
-	chunk, err := c.cidnChunkInformer.Lister().Get(chunkName)
-	if err != nil {
-		if !apierrors.IsNotFound(err) {
-			c.logger.Warn("error getting blob from informer", "error", err)
-			return nil, fmt.Errorf("get chunk from informer error: %w", err)
-		}
-
-		chunk, err = chunks.Create(ctx, &v1alpha1.Chunk{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: chunkName,
-			},
-			Spec: v1alpha1.ChunkSpec{
-				MaximumRetry: 3,
-				Source: v1alpha1.ChunkHTTP{
-					Request: v1alpha1.ChunkHTTPRequest{
-						Method: method,
-						URL:    url,
-						Headers: map[string]string{
-							"Accept": c.acceptsStr,
-						},
-					},
-					Response: v1alpha1.ChunkHTTPResponse{
-						StatusCode: http.StatusOK,
-					},
-				},
-				BearerName: fmt.Sprintf("%s:%s", info.Host, strings.ReplaceAll(info.Image, "/", ":")),
-			},
-		}, metav1.CreateOptions{})
-		if err != nil && !apierrors.IsAlreadyExists(err) {
-			return nil, fmt.Errorf("create chunk error: %w", err)
-		}
-
-	} else {
-		switch chunk.Status.Phase {
-		case v1alpha1.ChunkPhaseSucceeded:
-			return &response{
-				StatusCode: chunk.Status.SourceResponse.StatusCode,
-				Headers:    chunk.Status.SourceResponse.Headers,
-				Body:       chunk.Status.ResponseBody,
-			}, nil
-		case v1alpha1.ChunkPhaseFailed:
-			if !chunk.Status.Retryable {
-				errorMsg := "manifest sync failed"
-				for _, condition := range chunk.Status.Conditions {
-					if condition.Message != "" {
-						errorMsg = condition.Message
-						break
-					}
-				}
-				return nil, fmt.Errorf("CIDN manifest sync failed: %s", errorMsg)
-			}
-		}
-	}
-
-	// Create a channel to receive blob status updates
-	statusChan := make(chan *v1alpha1.Chunk, 1)
-	defer close(statusChan)
-
-	// Add event handler to watch for blob status changes
-	handler := k8scache.ResourceEventHandlerFuncs{
-		UpdateFunc: func(oldObj, newObj interface{}) {
-			newChunk, ok := newObj.(*v1alpha1.Chunk)
-			if !ok {
-				return
-			}
-			if newChunk.Name == chunk.Name {
-				select {
-				case statusChan <- newChunk:
-				default:
-				}
-			}
-		},
-	}
-
-	registration, err := c.cidnChunkInformer.Informer().AddEventHandler(handler)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		_ = c.cidnChunkInformer.Informer().RemoveEventHandler(registration)
-	}()
-
-	// Wait for blob to complete or fail
-	timeout := time.After(10 * time.Minute)
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-timeout:
-			return nil, fmt.Errorf("timeout waiting for CIDN manifest sync")
-		case chunk := <-statusChan:
-			switch chunk.Status.Phase {
-			case v1alpha1.ChunkPhaseSucceeded:
-				return &response{
-					StatusCode: chunk.Status.SourceResponse.StatusCode,
-					Headers:    chunk.Status.SourceResponse.Headers,
-					Body:       chunk.Status.ResponseBody,
-				}, nil
-			case v1alpha1.ChunkPhaseFailed:
-				if !chunk.Status.Retryable {
-					errorMsg := "manifest sync failed"
-					for _, condition := range chunk.Status.Conditions {
-						if condition.Message != "" {
-							errorMsg = condition.Message
-							break
-						}
-					}
-					return nil, fmt.Errorf("CIDN manifest sync failed: %s", errorMsg)
-				}
-			}
-		}
-	}
-}
-
-func (c *Manifests) cacheBlobWithCIDN(ctx context.Context, info *PathInfo) error {
-	sourceURL := fmt.Sprintf("https://%s/v2/%s/manifests/%s", info.Host, info.Image, info.Manifests)
-	cachePath := registry.BlobCachePath(info.Manifests)
-
-	blobName := info.Manifests
-	blobs := c.cidnClient.TaskV1alpha1().Blobs()
-
-	blob, err := c.cidnBlobInformer.Lister().Get(blobName)
-	if err != nil {
-		if !apierrors.IsNotFound(err) {
-			c.logger.Warn("error getting blob from informer", "error", err)
-			return err
-		}
-
-		displayName := fmt.Sprintf("%s/%s@%s", info.Host, info.Image, info.Manifests)
-
-		blob, err = blobs.Create(ctx, &v1alpha1.Blob{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: blobName,
-				Annotations: map[string]string{
-					v1alpha1.BlobDisplayNameAnnotation: displayName,
-				},
-			},
-			Spec: v1alpha1.BlobSpec{
-				MaximumRunning: 1,
-				ChunksNumber:   1,
-				Source: []v1alpha1.BlobSource{
-					{
-						URL:        sourceURL,
-						BearerName: fmt.Sprintf("%s:%s", info.Host, strings.ReplaceAll(info.Image, "/", ":")),
-					},
-				},
-				Destination: []v1alpha1.BlobDestination{
-					{
-						Name:         c.cidnDestination,
-						Path:         cachePath,
-						SkipIfExists: true,
-					},
-				},
-				ContentSha256: registry.CleanDigest(info.Manifests),
-			},
-		}, metav1.CreateOptions{})
-		if err != nil && !apierrors.IsAlreadyExists(err) {
-			return fmt.Errorf("create blob error: %w", err)
-		}
-	} else {
-		switch blob.Status.Phase {
-		case v1alpha1.BlobPhaseSucceeded:
-			return nil
-		case v1alpha1.BlobPhaseFailed:
-			errorMsg := "blob sync failed"
-			for _, condition := range blob.Status.Conditions {
-				if condition.Message != "" {
-					errorMsg = condition.Message
-					break
-				}
-			}
-			return fmt.Errorf("CIDN blob sync failed: %s", errorMsg)
-		}
-	}
-
-	// Create a channel to receive blob status updates
-	statusChan := make(chan *v1alpha1.Blob, 1)
-	defer close(statusChan)
-
-	// Add event handler to watch for blob status changes
-	handler := k8scache.ResourceEventHandlerFuncs{
-		UpdateFunc: func(oldObj, newObj interface{}) {
-			newBlob, ok := newObj.(*v1alpha1.Blob)
-			if !ok {
-				return
-			}
-			if newBlob.Name == blobName {
-				select {
-				case statusChan <- newBlob:
-				default:
-				}
-			}
-		},
-	}
-
-	registration, err := c.cidnBlobInformer.Informer().AddEventHandler(handler)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = c.cidnBlobInformer.Informer().RemoveEventHandler(registration)
-	}()
-
-	// Wait for blob to complete or fail
-	timeout := time.After(10 * time.Minute)
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-timeout:
-			return fmt.Errorf("timeout waiting for CIDN blob sync")
-
-		case blob := <-statusChan:
-			switch blob.Status.Phase {
-			case v1alpha1.BlobPhaseSucceeded:
-				return nil
-			case v1alpha1.BlobPhaseFailed:
-				errorMsg := "blob sync failed"
-				for _, condition := range blob.Status.Conditions {
-					if condition.Message != "" {
-						errorMsg = condition.Message
-						break
-					}
-				}
-				return fmt.Errorf("CIDN blob sync failed: %s", errorMsg)
-			}
-		}
 	}
 }
 

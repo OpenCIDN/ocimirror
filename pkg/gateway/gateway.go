@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/OpenCIDN/ocimirror/internal/registry"
 	"github.com/OpenCIDN/ocimirror/internal/throttled"
 	"github.com/OpenCIDN/ocimirror/internal/utils"
 	"github.com/OpenCIDN/ocimirror/pkg/blobs"
@@ -246,7 +247,7 @@ func (c *Gateway) forward(rw http.ResponseWriter, r *http.Request, info *PathInf
 	}
 
 	if info.Manifests != "" {
-		forwardReq.Header.Set("Accept", acceptsStr)
+		forwardReq.Header.Set("Accept", registry.OCIAcceptsValue)
 	}
 
 	resp, err := c.httpClient.Do(forwardReq)
@@ -293,5 +294,3 @@ func (c *Gateway) forward(rw http.ResponseWriter, r *http.Request, info *PathInf
 		io.Copy(rw, body)
 	}
 }
-
-var acceptsStr = "application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json"
