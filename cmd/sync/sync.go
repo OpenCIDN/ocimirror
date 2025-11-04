@@ -160,11 +160,16 @@ func syncImage(ctx context.Context, clientset versioned.Interface, httpClient *h
 
 	logger.Info("Image details", "host", host, "repository", repository, "digest", manifestDigest, "isTag", isTag)
 
-	// For tag-based references, create Chunk; for digest-based, create Blob
+	// For tag-based references, create Chunk for the tag, then Blob for the digest
+	// For digest-based references, directly create Blob
 	if isTag {
-		// Use Chunk for tag-based manifest
+		// Create Chunk for tag-based manifest (to resolve tag to digest)
 		if err := createManifestChunk(ctx, clientset, host, repository, ref.Identifier(), logger); err != nil {
 			return fmt.Errorf("failed to create manifest chunk: %w", err)
+		}
+		// Also create Blob for the resolved digest
+		if err := createManifestBlob(ctx, clientset, host, repository, manifestDigest, destination, logger); err != nil {
+			return fmt.Errorf("failed to create manifest blob: %w", err)
 		}
 	} else {
 		// Use Blob for digest-based manifest
@@ -288,6 +293,7 @@ func getBearerName(host, repository string) string {
 }
 
 // createManifestChunk creates a CIDN Chunk resource for a tag-based manifest
+// This is used to resolve the tag to a digest via a HEAD request
 func createManifestChunk(ctx context.Context, clientset versioned.Interface, host, repository, tag string, logger *slog.Logger) error {
 	url := fmt.Sprintf("https://%s/v2/%s/manifests/%s", host, repository, tag)
 	chunkName := fmt.Sprintf("manifest:%s:%s:%s", host, strings.ReplaceAll(repository, "/", ":"), tag)
@@ -304,7 +310,7 @@ func createManifestChunk(ctx context.Context, clientset versioned.Interface, hos
 		return fmt.Errorf("error checking chunk: %w", err)
 	}
 
-	// Create the chunk
+	// Create the chunk with HEAD method to resolve tag to digest
 	_, err = chunks.Create(ctx, &v1alpha1.Chunk{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: chunkName,
@@ -313,7 +319,7 @@ func createManifestChunk(ctx context.Context, clientset versioned.Interface, hos
 			MaximumRetry: 3,
 			Source: v1alpha1.ChunkHTTP{
 				Request: v1alpha1.ChunkHTTPRequest{
-					Method: http.MethodGet,
+					Method: http.MethodHead,
 					URL:    url,
 					Headers: map[string]string{
 						"Accept": "application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json",
