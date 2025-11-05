@@ -322,7 +322,9 @@ func waitForBlob(ctx context.Context, informer informers.BlobInformer, name stri
 	}
 
 	if timeout > 0 {
-		ctx, _ = context.WithTimeout(ctx, timeout)
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
 	}
 
 	for {
