@@ -19,6 +19,7 @@ require (
 	github.com/wzshiming/imc v0.0.0-20250106051804-1cb884b5184a
 	github.com/wzshiming/sss v0.4.0
 	golang.org/x/crypto v0.41.0
+	golang.org/x/sync v0.17.0
 	golang.org/x/time v0.11.0
 	k8s.io/apimachinery v0.34.1
 	k8s.io/client-go v0.34.1
