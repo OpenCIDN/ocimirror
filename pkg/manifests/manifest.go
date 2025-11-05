@@ -346,6 +346,7 @@ func (c *Manifests) tryFirstServeCachedManifest(rw http.ResponseWriter, r *http.
 	val, ok := c.manifestCache.Get(info)
 	if ok {
 		if val.Error != nil {
+			c.logger.Warn("cached manifest has error", "info", info, "error", val.Error, "statusCode", val.StatusCode)
 			utils.ServeError(rw, r, val.Error, val.StatusCode)
 			return true
 		}
@@ -395,6 +396,7 @@ func (c *Manifests) missServeCachedManifest(rw http.ResponseWriter, r *http.Requ
 	val, ok := c.manifestCache.Get(info)
 	if ok {
 		if val.Error != nil {
+			c.logger.Warn("cached manifest has error", "info", info, "error", val.Error, "statusCode", val.StatusCode)
 			utils.ServeError(rw, r, val.Error, val.StatusCode)
 			return true
 		}

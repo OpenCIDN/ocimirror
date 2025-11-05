@@ -79,11 +79,19 @@ func (m *manifestCache) Get(info *PathInfo) (cacheValue, bool) {
 func (m *manifestCache) PutError(info *PathInfo, err error, sc int) {
 	key := manifestCacheKey(info)
 	if !info.IsDigestManifests {
+		tag, ok := m.tag.Get(key)
+		if ok && tag.Error != nil && tag.StatusCode == sc {
+			return
+		}
 		m.tag.SetWithTTL(key, cacheTagValue{
 			Error:      err,
 			StatusCode: sc,
 		}, m.duration)
 	} else {
+		digest, ok := m.digest.Get(key)
+		if ok && digest.Error != nil && digest.StatusCode == sc {
+			return
+		}
 		m.digest.SetWithTTL(key, cacheDigestValue{
 			Error:      err,
 			StatusCode: sc,
@@ -94,15 +102,22 @@ func (m *manifestCache) PutError(info *PathInfo, err error, sc int) {
 func (m *manifestCache) Put(info *PathInfo, val cacheValue) {
 	key := manifestCacheKey(info)
 	if !info.IsDigestManifests {
-		m.tag.SetWithTTL(key, cacheTagValue{
-			Digest: val.Digest,
-		}, m.duration)
+		tag, ok := m.tag.Get(key)
+		if !ok || tag.Digest != val.Digest {
+			m.tag.SetWithTTL(key, cacheTagValue{
+				Digest: val.Digest,
+			}, m.duration)
+		}
 
 		if val.Digest != "" {
 			key.Tag = val.Digest
 		}
 	}
 
+	digest, ok := m.digest.Get(key)
+	if ok && digest.MediaType == val.MediaType && digest.Length == val.Length && len(digest.Body) == len(val.Body) {
+		return
+	}
 	m.digest.SetWithTTL(key, cacheDigestValue{
 		MediaType: val.MediaType,
 		Length:    val.Length,

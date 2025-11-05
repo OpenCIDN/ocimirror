@@ -41,6 +41,10 @@ func (c *blobsCache) Remove(key string) {
 }
 
 func (c *blobsCache) PutError(key string, err error, sc int) {
+	blob, ok := c.digest.Get(key)
+	if ok && blob.Error != nil && blob.StatusCode == sc {
+		return
+	}
 	c.digest.SetWithTTL(key, blobValue{
 		Error:      err,
 		StatusCode: sc,
@@ -48,17 +52,14 @@ func (c *blobsCache) PutError(key string, err error, sc int) {
 }
 
 func (c *blobsCache) Put(key string, modTime time.Time, size int64) {
+	blob, ok := c.digest.Get(key)
+	if ok && blob.Error == nil && blob.Size == size && blob.ModTime.Equal(modTime) {
+		return
+	}
 	c.digest.SetWithTTL(key, blobValue{
 		Size:    size,
 		ModTime: modTime,
 	}, c.duration)
-}
-
-func (c *blobsCache) PutNoTTL(key string, modTime time.Time, size int64) {
-	c.digest.Set(key, blobValue{
-		Size:    size,
-		ModTime: modTime,
-	})
 }
 
 type blobValue struct {

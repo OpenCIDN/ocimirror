@@ -203,7 +203,8 @@ func (b *Blobs) serveCache(rw http.ResponseWriter, r *http.Request, info *BlobIn
 	value, ok := b.blobCache.Get(info.Blobs)
 	if ok {
 		if value.Error != nil {
-			utils.ServeError(rw, r, value.Error, 0)
+			b.logger.Info("Cache hit with error", "digest", info.Blobs, "error", value.Error, "statusCode", value.StatusCode)
+			utils.ServeError(rw, r, value.Error, value.StatusCode)
 			return true
 		}
 
@@ -383,9 +384,11 @@ func (b *Blobs) serveCachedBlobDirect(rw http.ResponseWriter, r *http.Request, i
 	ctx := r.Context()
 	rw.Header().Set("Content-Type", "application/octet-stream")
 
+	var err0 error
 	rs := seeker.NewReadSeekCloser(func(start int64) (io.ReadCloser, error) {
 		data, err := b.cache.GetBlobWithOffset(ctx, info.Blobs, start)
 		if err != nil {
+			err0 = err
 			return nil, err
 		}
 
@@ -406,6 +409,11 @@ func (b *Blobs) serveCachedBlobDirect(rw http.ResponseWriter, r *http.Request, i
 	defer rs.Close()
 
 	http.ServeContent(rw, r, "", modTime, rs)
+	if err0 != nil {
+		b.logger.Info("failed to serve blob", "digest", info.Blobs, "error", err0)
+		b.blobCache.PutError(info.Blobs, err0, http.StatusInternalServerError)
+		return
+	}
 
 	b.blobCache.Put(info.Blobs, modTime, size)
 }
@@ -419,7 +427,7 @@ func (b *Blobs) serveCachedBlobRedirect(rw http.ResponseWriter, r *http.Request,
 	u, err := b.cache.RedirectBlob(r.Context(), info.Blobs, referer)
 	if err != nil {
 		b.logger.Info("failed to redirect blob", "digest", info.Blobs, "error", err)
-		b.blobCache.Remove(info.Blobs)
+		b.blobCache.PutError(info.Blobs, errcode.ErrorCodeUnknown, http.StatusInternalServerError)
 		utils.ServeError(rw, r, errcode.ErrorCodeUnknown, 0)
 		return
 	}
