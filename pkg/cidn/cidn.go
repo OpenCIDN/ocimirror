@@ -387,7 +387,9 @@ func waitForChunkCompletion(ctx context.Context, informer informers.ChunkInforme
 	}
 
 	if timeout > 0 {
-		ctx, _ = context.WithTimeout(ctx, timeout)
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
 	}
 
 	for {
