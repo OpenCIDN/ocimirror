@@ -24,4 +24,5 @@ type ManifestLayer struct {
 type Platform struct {
 	Architecture string `json:"architecture"`
 	OS           string `json:"os"`
+	Variant      string `json:"variant,omitempty"`
 }

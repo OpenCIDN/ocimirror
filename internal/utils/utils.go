@@ -71,11 +71,10 @@ func ServeError(rw http.ResponseWriter, r *http.Request, err error, sc int) erro
 }
 
 func CorrectImage(host, name string) (string, string) {
-	if host == "docker.io" {
+	switch host {
+	case "docker.io", "index.docker.io":
 		host = "registry-1.docker.io"
-	} else if host == "ollama.ai" {
-		host = "ollama.com"
-	} else if host == "registry.ollama.ai" {
+	case "ollama.ai", "registry.ollama.ai":
 		host = "ollama.com"
 	}
 

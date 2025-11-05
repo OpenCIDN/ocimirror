@@ -22,6 +22,7 @@ type CIDN struct {
 	BlobInformer  informers.BlobInformer
 	ChunkInformer informers.ChunkInformer
 	Destination   string
+	Group         string
 }
 
 type Response struct {
@@ -47,14 +48,20 @@ func (c *CIDN) Blob(ctx context.Context, host, image, digest string) error {
 		return err
 	} else {
 		displayName := fmt.Sprintf("%s/%s@%s", formatHost(host), image, digest)
+		annotations := map[string]string{
+			v1alpha1.WebuiDisplayNameAnnotation: displayName,
+			v1alpha1.WebuiTagAnnotation:         "blob",
+			v1alpha1.ReleaseTTLAnnotation:       "1h",
+		}
+
+		if c.Group != "" {
+			annotations[v1alpha1.WebuiGroupAnnotation] = c.Group
+		}
+
 		_, err = blobs.Create(ctx, &v1alpha1.Blob{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: blobName,
-				Annotations: map[string]string{
-					v1alpha1.WebuiDisplayNameAnnotation: displayName,
-					v1alpha1.WebuiTagAnnotation:         "blob",
-					v1alpha1.ReleaseTTLAnnotation:       "1h",
-				},
+				Name:        blobName,
+				Annotations: annotations,
 			},
 			Spec: v1alpha1.BlobSpec{
 				MaximumRunning:   3,
@@ -122,14 +129,20 @@ func (c *CIDN) ManifestTag(ctx context.Context, host, image, tag string) (*Respo
 		return nil, fmt.Errorf("get chunk from informer error: %w", err)
 	} else {
 		displayName := fmt.Sprintf("%s/%s:%s", formatHost(host), image, tag)
+
+		annotations := map[string]string{
+			v1alpha1.WebuiDisplayNameAnnotation: displayName,
+			v1alpha1.WebuiTagAnnotation:         "manifest",
+			v1alpha1.ReleaseTTLAnnotation:       "1h",
+		}
+
+		if c.Group != "" {
+			annotations[v1alpha1.WebuiGroupAnnotation] = c.Group
+		}
 		_, err = chunks.Create(ctx, &v1alpha1.Chunk{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: chunkName,
-				Annotations: map[string]string{
-					v1alpha1.WebuiDisplayNameAnnotation: displayName,
-					v1alpha1.WebuiTagAnnotation:         "manifest",
-					v1alpha1.ReleaseTTLAnnotation:       "1h",
-				},
+				Name:        chunkName,
+				Annotations: annotations,
 			},
 			Spec: v1alpha1.ChunkSpec{
 				MaximumRetry: 3,
@@ -188,14 +201,19 @@ func (c *CIDN) ManifestDigest(ctx context.Context, host, image, digest string) e
 		return err
 	} else {
 		displayName := fmt.Sprintf("%s/%s@%s", formatHost(host), image, digest)
+		annotations := map[string]string{
+			v1alpha1.WebuiDisplayNameAnnotation: displayName,
+			v1alpha1.WebuiTagAnnotation:         "manifest",
+			v1alpha1.ReleaseTTLAnnotation:       "1h",
+		}
+
+		if c.Group != "" {
+			annotations[v1alpha1.WebuiGroupAnnotation] = c.Group
+		}
 		_, err = blobs.Create(ctx, &v1alpha1.Blob{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: blobName,
-				Annotations: map[string]string{
-					v1alpha1.WebuiDisplayNameAnnotation: displayName,
-					v1alpha1.WebuiTagAnnotation:         "manifest",
-					v1alpha1.ReleaseTTLAnnotation:       "1h",
-				},
+				Name:        blobName,
+				Annotations: annotations,
 			},
 			Spec: v1alpha1.BlobSpec{
 				MaximumRunning: 1,
@@ -262,7 +280,6 @@ func firstNonEmptyConditionMessage(conditions []v1alpha1.Condition, fallback str
 
 func waitForBlob(ctx context.Context, informer informers.BlobInformer, name string, timeout time.Duration) (*v1alpha1.Blob, error) {
 	statusChan := make(chan *v1alpha1.Blob, 1)
-	defer close(statusChan)
 
 	handler := k8scache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
@@ -304,17 +321,14 @@ func waitForBlob(ctx context.Context, informer informers.BlobInformer, name stri
 		}
 	}
 
-	var t <-chan time.Time
 	if timeout > 0 {
-		t = time.After(timeout)
+		ctx, _ = context.WithTimeout(ctx, timeout)
 	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-t:
-			return nil, fmt.Errorf("timeout waiting for CIDN blob sync")
 		case b := <-statusChan:
 			if b == nil {
 				return nil, fmt.Errorf("blob sync %s deleted", name)
@@ -329,7 +343,6 @@ func waitForBlob(ctx context.Context, informer informers.BlobInformer, name stri
 
 func waitForChunkCompletion(ctx context.Context, informer informers.ChunkInformer, name string, timeout time.Duration) (*v1alpha1.Chunk, error) {
 	statusChan := make(chan *v1alpha1.Chunk, 1)
-	defer close(statusChan)
 
 	handler := k8scache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
@@ -371,17 +384,14 @@ func waitForChunkCompletion(ctx context.Context, informer informers.ChunkInforme
 		}
 	}
 
-	var t <-chan time.Time
 	if timeout > 0 {
-		t = time.After(timeout)
+		ctx, _ = context.WithTimeout(ctx, timeout)
 	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-t:
-			return nil, fmt.Errorf("timeout waiting for CIDN manifest sync")
 		case ch := <-statusChan:
 			if ch == nil {
 				return nil, fmt.Errorf("chunk sync %s deleted", name)
