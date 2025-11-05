@@ -142,16 +142,12 @@ func runE(ctx context.Context, flags *flagpole) error {
 
 	// Process each image
 	for _, imageRef := range flags.Images {
-
-		group := getImage(imageRef)
-
 		// Create CIDN client
 		cidnClient := &cidn.CIDN{
 			Client:        clientset,
 			BlobInformer:  blobInformer,
 			ChunkInformer: chunkInformer,
 			Destination:   u.Scheme,
-			Group:         group,
 		}
 
 		logger.Info("Processing image", "image", imageRef, "platforms", platformFilters)
@@ -166,10 +162,4 @@ func runE(ctx context.Context, flags *flagpole) error {
 	}
 
 	return nil
-}
-
-func getImage(image string) string {
-	image = strings.SplitN(image, "@", 2)[0]
-	image = strings.SplitN(image, ":", 2)[0]
-	return image
 }

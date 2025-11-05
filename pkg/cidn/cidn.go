@@ -22,7 +22,6 @@ type CIDN struct {
 	BlobInformer  informers.BlobInformer
 	ChunkInformer informers.ChunkInformer
 	Destination   string
-	Group         string
 }
 
 type Response struct {
@@ -52,10 +51,7 @@ func (c *CIDN) Blob(ctx context.Context, host, image, digest string) error {
 			v1alpha1.WebuiDisplayNameAnnotation: displayName,
 			v1alpha1.WebuiTagAnnotation:         "blob",
 			v1alpha1.ReleaseTTLAnnotation:       "1h",
-		}
-
-		if c.Group != "" {
-			annotations[v1alpha1.WebuiGroupAnnotation] = c.Group
+			v1alpha1.WebuiGroupAnnotation:       fmt.Sprintf("%s/%s", formatHost(host), image),
 		}
 
 		_, err = blobs.Create(ctx, &v1alpha1.Blob{
@@ -134,11 +130,9 @@ func (c *CIDN) ManifestTag(ctx context.Context, host, image, tag string) (*Respo
 			v1alpha1.WebuiDisplayNameAnnotation: displayName,
 			v1alpha1.WebuiTagAnnotation:         "manifest",
 			v1alpha1.ReleaseTTLAnnotation:       "1h",
+			v1alpha1.WebuiGroupAnnotation:       fmt.Sprintf("%s/%s", formatHost(host), image),
 		}
 
-		if c.Group != "" {
-			annotations[v1alpha1.WebuiGroupAnnotation] = c.Group
-		}
 		_, err = chunks.Create(ctx, &v1alpha1.Chunk{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:        chunkName,
@@ -205,11 +199,9 @@ func (c *CIDN) ManifestDigest(ctx context.Context, host, image, digest string) e
 			v1alpha1.WebuiDisplayNameAnnotation: displayName,
 			v1alpha1.WebuiTagAnnotation:         "manifest",
 			v1alpha1.ReleaseTTLAnnotation:       "1h",
+			v1alpha1.WebuiGroupAnnotation:       fmt.Sprintf("%s/%s", formatHost(host), image),
 		}
 
-		if c.Group != "" {
-			annotations[v1alpha1.WebuiGroupAnnotation] = c.Group
-		}
 		_, err = blobs.Create(ctx, &v1alpha1.Blob{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:        blobName,
