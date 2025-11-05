@@ -194,7 +194,7 @@ func matchesPlatforms(platform spec.Platform, filters []*spec.Platform) bool {
 func matchesPlatform(platform, filter spec.Platform) bool {
 	return platform.OS == filter.OS &&
 		platform.Architecture == filter.Architecture &&
-		platform.Variant == filter.Variant
+		(filter.Variant == "" || platform.Variant == filter.Variant)
 }
 
 func ParseImageReference(imageRef string) (host, image, reference string, isDigest bool, err error) {
