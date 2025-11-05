@@ -36,16 +36,25 @@ func (c *CIDN) Blob(ctx context.Context, host, image, digest string) error {
 	blobName := blobName(host, image, digest)
 	blobs := c.Client.TaskV1alpha1().Blobs()
 
+	var create bool
 	if blob, err := c.BlobInformer.Lister().Get(blobName); err == nil {
 		switch blob.Status.Phase {
 		case v1alpha1.BlobPhaseSucceeded:
-			return nil
+			err := blobs.Delete(ctx, blobName, metav1.DeleteOptions{})
+			if err != nil {
+				return fmt.Errorf("failed to delete blob %s: %w", blobName, err)
+			}
+			create = true
 		case v1alpha1.BlobPhaseFailed:
-			return fmt.Errorf("CIDN blob sync failed: %s", firstNonEmptyConditionMessage(blob.Status.Conditions, "blob sync failed"))
+			return fmt.Errorf("blob sync failed: %s", firstNonEmptyConditionMessage(blob.Status.Conditions, "blob sync failed"))
 		}
 	} else if !apierrors.IsNotFound(err) {
 		return err
 	} else {
+		create = true
+	}
+
+	if create {
 		displayName := fmt.Sprintf("%s/%s@%s", formatHost(host), image, digest)
 		annotations := map[string]string{
 			v1alpha1.WebuiDisplayNameAnnotation: displayName,
@@ -54,7 +63,7 @@ func (c *CIDN) Blob(ctx context.Context, host, image, digest string) error {
 			v1alpha1.WebuiGroupAnnotation:       fmt.Sprintf("%s/%s", formatHost(host), image),
 		}
 
-		_, err = blobs.Create(ctx, &v1alpha1.Blob{
+		_, err := blobs.Create(ctx, &v1alpha1.Blob{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:        blobName,
 				Annotations: annotations,
@@ -92,7 +101,7 @@ func (c *CIDN) Blob(ctx context.Context, host, image, digest string) error {
 	case v1alpha1.BlobPhaseSucceeded:
 		return nil
 	case v1alpha1.BlobPhaseFailed:
-		return fmt.Errorf("CIDN blob sync failed: %s", firstNonEmptyConditionMessage(b.Status.Conditions, "blob sync failed"))
+		return fmt.Errorf("blob sync failed: %s", firstNonEmptyConditionMessage(b.Status.Conditions, "blob sync failed"))
 	default:
 		return fmt.Errorf("unexpected blob phase: %s", b.Status.Phase)
 	}
@@ -184,16 +193,25 @@ func (c *CIDN) ManifestDigest(ctx context.Context, host, image, digest string) e
 	blobName := manifestName(host, image, digest)
 	blobs := c.Client.TaskV1alpha1().Blobs()
 
+	var create bool
 	if blob, err := c.BlobInformer.Lister().Get(blobName); err == nil {
 		switch blob.Status.Phase {
 		case v1alpha1.BlobPhaseSucceeded:
-			return nil
+			err := blobs.Delete(ctx, blobName, metav1.DeleteOptions{})
+			if err != nil {
+				return fmt.Errorf("failed to delete blob %s: %w", blobName, err)
+			}
+			create = true
 		case v1alpha1.BlobPhaseFailed:
-			return fmt.Errorf("CIDN blob sync failed: %s", firstNonEmptyConditionMessage(blob.Status.Conditions, "blob sync failed"))
+			return fmt.Errorf("blob sync failed: %s", firstNonEmptyConditionMessage(blob.Status.Conditions, "blob sync failed"))
 		}
 	} else if !apierrors.IsNotFound(err) {
 		return err
 	} else {
+		create = true
+	}
+
+	if create {
 		displayName := fmt.Sprintf("%s/%s@%s", formatHost(host), image, digest)
 		annotations := map[string]string{
 			v1alpha1.WebuiDisplayNameAnnotation: displayName,
@@ -202,7 +220,7 @@ func (c *CIDN) ManifestDigest(ctx context.Context, host, image, digest string) e
 			v1alpha1.WebuiGroupAnnotation:       fmt.Sprintf("%s/%s", formatHost(host), image),
 		}
 
-		_, err = blobs.Create(ctx, &v1alpha1.Blob{
+		_, err := blobs.Create(ctx, &v1alpha1.Blob{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:        blobName,
 				Annotations: annotations,
@@ -243,7 +261,7 @@ func (c *CIDN) ManifestDigest(ctx context.Context, host, image, digest string) e
 	case v1alpha1.BlobPhaseSucceeded:
 		return nil
 	case v1alpha1.BlobPhaseFailed:
-		return fmt.Errorf("CIDN blob sync failed: %s", firstNonEmptyConditionMessage(b.Status.Conditions, "blob sync failed"))
+		return fmt.Errorf("blob sync failed: %s", firstNonEmptyConditionMessage(b.Status.Conditions, "blob sync failed"))
 	default:
 		return fmt.Errorf("unexpected blob phase: %s", b.Status.Phase)
 	}
@@ -303,7 +321,7 @@ func waitForBlob(ctx context.Context, informer informers.BlobInformer, name stri
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = informer.Informer().RemoveEventHandler(reg) }()
+	defer informer.Informer().RemoveEventHandler(reg)
 
 	// Push current state if present
 	if b, err := informer.Lister().Get(name); err == nil {
@@ -323,9 +341,12 @@ func waitForBlob(ctx context.Context, informer informers.BlobInformer, name stri
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case b := <-statusChan:
+		case b, ok := <-statusChan:
+			if !ok {
+				return nil, fmt.Errorf("chunk was cancel before completion")
+			}
 			if b == nil {
-				return nil, fmt.Errorf("blob sync %s deleted", name)
+				return nil, fmt.Errorf("chunk was deleted before completion")
 			}
 			switch b.Status.Phase {
 			case v1alpha1.BlobPhaseSucceeded, v1alpha1.BlobPhaseFailed:
@@ -388,9 +409,12 @@ func waitForChunkCompletion(ctx context.Context, informer informers.ChunkInforme
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case ch := <-statusChan:
+		case ch, ok := <-statusChan:
+			if !ok {
+				return nil, fmt.Errorf("blob was cancel before completion")
+			}
 			if ch == nil {
-				return nil, fmt.Errorf("chunk sync %s deleted", name)
+				return nil, fmt.Errorf("blob was deleted before completion")
 			}
 			switch ch.Status.Phase {
 			case v1alpha1.ChunkPhaseSucceeded:

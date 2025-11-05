@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/OpenCIDN/cidn/pkg/clientset/versioned"
 	informers "github.com/OpenCIDN/cidn/pkg/informers/externalversions/task/v1alpha1"
@@ -29,9 +28,6 @@ type Manifests struct {
 	logger     *slog.Logger
 	cache      *cache.Cache
 
-	manifestCacheDuration time.Duration
-	manifestCache         *manifestCache
-
 	cidn cidn.CIDN
 }
 
@@ -40,15 +36,6 @@ type Option func(c *Manifests)
 func WithClient(client *http.Client) Option {
 	return func(c *Manifests) {
 		c.httpClient = client
-	}
-}
-
-func WithManifestCacheDuration(manifestCacheDuration time.Duration) Option {
-	return func(c *Manifests) {
-		if manifestCacheDuration < 10*time.Second {
-			manifestCacheDuration = 10 * time.Second
-		}
-		c.manifestCacheDuration = manifestCacheDuration
 	}
 }
 
@@ -75,95 +62,66 @@ func WithCIDNClient(cidnClient versioned.Interface, cidnBlobInformer informers.B
 
 func NewManifests(opts ...Option) (*Manifests, error) {
 	c := &Manifests{
-		logger:                slog.Default(),
-		httpClient:            http.DefaultClient,
-		manifestCacheDuration: time.Minute,
+		logger:     slog.Default(),
+		httpClient: http.DefaultClient,
 	}
 
 	for _, opt := range opts {
 		opt(c)
 	}
 
-	ctx := context.Background()
-	c.manifestCache = newManifestCache(c.manifestCacheDuration)
-	c.manifestCache.Start(ctx, c.logger)
-
 	return c, nil
 }
 
 func (c *Manifests) Serve(rw http.ResponseWriter, r *http.Request, info *PathInfo, t *token.Token) {
-	done := c.tryFirstServeCachedManifest(rw, r, info, t)
-	if done {
+	if c.serveCache(rw, r, info) {
 		return
 	}
 
-	ok, _ := c.cache.StatManifest(r.Context(), info.Host, info.Image, info.Manifests)
-	if ok {
-		// Use CIDN for manifest syncing if configured
-		if c.cidn.Client != nil {
-			sc, err := c.cacheManifestWithCIDN(info)
-			if err != nil {
-				c.manifestCache.PutError(info, err, sc)
+	// Use CIDN for manifest syncing if configured
+	if c.cidn.Client != nil {
+		// Synchronously cache the manifest
+		sc, err := c.cacheManifestWithCIDN(info)
+		if err != nil {
+			errStr := err.Error()
+			if strings.Contains(errStr, "status code: got 404") {
+				utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
+				return
+			} else if strings.Contains(errStr, "status code: got 403") {
+				utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
+				return
+			} else if strings.Contains(errStr, "status code: got 401") {
+				utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
+				return
+			} else if strings.Contains(errStr, "status code: got 412") {
+				// For gcr.io
+				// unexpected status code 412 Precondition Failed: Container Registry is deprecated and shutting down, please use the auto migration tool to migrate to Artifact Registry (gcloud artifacts docker upgrade migrate --projects='arrikto'). For more details see: https://cloud.google.com/artifact-registry/docs/transition/auto-migrate-gcr-ar"
+				utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
+				return
+			} else if strings.Contains(errStr, "unsupported target response") {
+				utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
+				return
+			} else if strings.Contains(errStr, "DENIED") {
+				utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
+				return
 			}
-		} else {
-			// Synchronously cache the manifest
-			sc, err := c.cacheManifest(info)
-			if err != nil {
-				c.manifestCache.PutError(info, err, sc)
-			}
-		}
-		if c.serveCachedManifest(rw, r, info, true, "cached") {
+
+			c.logger.Warn("failed to cache manifest with cidn", "info", info, "error", err)
+			utils.ServeError(rw, r, err, sc)
 			return
 		}
 	} else {
-		// Use CIDN for manifest syncing if configured
-		if c.cidn.Client != nil {
-			// Synchronously cache the manifest
-			sc, err := c.cacheManifestWithCIDN(info)
-			if err != nil {
-				errStr := err.Error()
-				if strings.Contains(errStr, "status code: got 404") {
-					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
-					return
-				} else if strings.Contains(errStr, "status code: got 403") {
-					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
-					return
-				} else if strings.Contains(errStr, "status code: got 401") {
-					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
-					return
-				} else if strings.Contains(errStr, "status code: got 412") {
-					// For gcr.io
-					// unexpected status code 412 Precondition Failed: Container Registry is deprecated and shutting down, please use the auto migration tool to migrate to Artifact Registry (gcloud artifacts docker upgrade migrate --projects='arrikto'). For more details see: https://cloud.google.com/artifact-registry/docs/transition/auto-migrate-gcr-ar"
-					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
-					return
-				} else if strings.Contains(errStr, "unsupported target response") {
-					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
-					return
-				} else if strings.Contains(errStr, "DENIED") {
-					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
-					return
-				}
-
-				c.logger.Warn("failed to cache manifest with cidn", "info", info, "error", err)
-				c.manifestCache.PutError(info, err, sc)
-				utils.ServeError(rw, r, err, sc)
-				return
-			}
-			c.logger.Info("finish caching manifest", "info", info)
-		} else {
-			// Synchronously cache the manifest
-			sc, err := c.cacheManifest(info)
-			if err != nil {
-				c.logger.Warn("failed to cache manifest", "info", info, "error", err)
-				c.manifestCache.PutError(info, err, sc)
-				utils.ServeError(rw, r, err, sc)
-				return
-			}
-			c.logger.Info("finish caching manifest", "info", info)
-		}
-		if c.missServeCachedManifest(rw, r, info) {
+		// Synchronously cache the manifest
+		sc, err := c.cacheManifest(info)
+		if err != nil {
+			c.logger.Warn("failed to cache manifest", "info", info, "error", err)
+			utils.ServeError(rw, r, err, sc)
 			return
 		}
+	}
+
+	if c.serveCache(rw, r, info) {
+		return
 	}
 
 	c.logger.Error("here should never be executed", "info", info)
@@ -215,9 +173,6 @@ func (c *Manifests) cacheManifest(info *PathInfo) (int, error) {
 		err = c.cache.RelinkManifest(ctx, info.Host, info.Image, info.Manifests, digest)
 		if err == nil {
 			c.logger.Info("relink manifest", "url", u.String())
-			c.manifestCache.Put(info, cacheValue{
-				Digest: digest,
-			})
 			return 0, nil
 		}
 		u.Path = fmt.Sprintf("/v2/%s/manifests/%s", info.Image, digest)
@@ -274,178 +229,64 @@ func (c *Manifests) cacheManifest(info *PathInfo) (int, error) {
 		return resp.StatusCode, retErrs
 	}
 
-	size, digest, mediaType, err := c.cache.PutManifestContent(ctx, info.Host, info.Image, info.Manifests, body)
+	_, _, _, err = c.cache.PutManifestContent(ctx, info.Host, info.Image, info.Manifests, body)
 	if err != nil {
 		return 0, err
 	}
 
-	c.manifestCache.Put(info, cacheValue{
-		Digest:    digest,
-		MediaType: mediaType,
-		Length:    strconv.FormatInt(size, 10),
-	})
 	return 0, nil
 }
 
 func (c *Manifests) cacheManifestWithCIDN(info *PathInfo) (int, error) {
 	ctx := context.Background()
 
+	var (
+		tag    string
+		digest string
+	)
 	if !info.IsDigestManifests && info.Host != "ollama.com" {
 		resp, err := c.cidn.ManifestTag(ctx, info.Host, info.Image, info.Manifests)
 		if err != nil {
 			return 0, fmt.Errorf("request with cidn error: %w", err)
 		}
 
-		digest := resp.Headers["docker-content-digest"]
+		digest = resp.Headers["docker-content-digest"]
 		if digest == "" {
 			return 0, errcode.ErrorCodeDenied
 		}
-
-		err = c.cache.RelinkManifest(ctx, info.Host, info.Image, info.Manifests, digest)
-		if err == nil {
-			c.logger.Info("relink manifest", "info", info)
-			c.manifestCache.Put(info, cacheValue{
-				Digest: digest,
-			})
-			return 0, nil
-		}
-
-		err = c.cidn.ManifestDigest(ctx, info.Host, info.Image, digest)
-		if err != nil {
-			return 0, fmt.Errorf("cache blob with cidn error: %w", err)
-		}
-		err = c.cache.RelinkManifest(ctx, info.Host, info.Image, info.Manifests, digest)
-		if err == nil {
-			c.logger.Info("relink manifest", "info", info)
-			c.manifestCache.Put(info, cacheValue{
-				Digest: digest,
-			})
-			return 0, nil
-		}
-
-		return 0, fmt.Errorf("failed to relink manifest after caching blob with CIDN")
+		tag = info.Manifests
 	} else {
-		err := c.cidn.ManifestDigest(ctx, info.Host, info.Image, info.Manifests)
-		if err != nil {
-			return 0, fmt.Errorf("cache blob with cidn error: %w", err)
-		}
-		err = c.cache.RelinkManifest(ctx, info.Host, info.Image, "", info.Manifests)
-		if err == nil {
-			c.logger.Info("relink manifest", "info", info)
-			c.manifestCache.Put(info, cacheValue{
-				Digest: info.Manifests,
-			})
-			return 0, nil
-		}
-
-		return 0, fmt.Errorf("failed to relink manifest after caching blob with CIDN")
-	}
-}
-
-func (c *Manifests) tryFirstServeCachedManifest(rw http.ResponseWriter, r *http.Request, info *PathInfo, t *token.Token) (done bool) {
-	val, ok := c.manifestCache.Get(info)
-	if ok {
-		if val.Error != nil {
-			c.logger.Warn("cached manifest has error", "info", info, "error", val.Error, "statusCode", val.StatusCode)
-			utils.ServeError(rw, r, val.Error, val.StatusCode)
-			return true
-		}
-
-		if val.MediaType == "" || val.Length == "" {
-			if c.serveCachedManifest(rw, r, info, true, "hit and mark") {
-				return true
-			}
-			c.manifestCache.Remove(info)
-			return false
-		}
-
-		if r.Method == http.MethodHead {
-			rw.Header().Set("Docker-Content-Digest", val.Digest)
-			rw.Header().Set("Content-Type", val.MediaType)
-			rw.Header().Set("Content-Length", val.Length)
-			return true
-		}
-
-		if len(val.Body) != 0 {
-			rw.Header().Set("Docker-Content-Digest", val.Digest)
-			rw.Header().Set("Content-Type", val.MediaType)
-			rw.Header().Set("Content-Length", val.Length)
-			rw.Write(val.Body)
-			return true
-		}
-
-		if c.serveCachedManifest(rw, r, info, false, "hit") {
-			return true
-		}
-		c.manifestCache.Remove(info)
-		return false
+		digest = info.Manifests
 	}
 
-	if info.IsDigestManifests {
-		return c.serveCachedManifest(rw, r, info, true, "try")
+	err := c.cache.RelinkManifest(ctx, info.Host, info.Image, tag, digest)
+	if err == nil {
+		c.logger.Info("relink manifest", "info", info)
+		return 0, nil
 	}
 
-	if t.CacheFirst {
-		return c.serveCachedManifest(rw, r, info, true, "try")
-	}
-
-	return false
-}
-
-func (c *Manifests) missServeCachedManifest(rw http.ResponseWriter, r *http.Request, info *PathInfo) (done bool) {
-	val, ok := c.manifestCache.Get(info)
-	if ok {
-		if val.Error != nil {
-			c.logger.Warn("cached manifest has error", "info", info, "error", val.Error, "statusCode", val.StatusCode)
-			utils.ServeError(rw, r, val.Error, val.StatusCode)
-			return true
-		}
-
-		if val.MediaType == "" || val.Length == "" {
-			return c.serveCachedManifest(rw, r, info, true, "miss and mark")
-		}
-
-		if r.Method == http.MethodHead {
-			rw.Header().Set("Docker-Content-Digest", val.Digest)
-			rw.Header().Set("Content-Type", val.MediaType)
-			rw.Header().Set("Content-Length", val.Length)
-			return true
-		}
-
-		if len(val.Body) != 0 {
-			rw.Header().Set("Docker-Content-Digest", val.Digest)
-			rw.Header().Set("Content-Type", val.MediaType)
-			rw.Header().Set("Content-Length", val.Length)
-			rw.Write(val.Body)
-			return true
-		}
-
-		return c.serveCachedManifest(rw, r, info, true, "miss")
-	}
-
-	return false
-}
-
-func (c *Manifests) serveCachedManifest(rw http.ResponseWriter, r *http.Request, info *PathInfo, recache bool, phase string) bool {
-	ctx := r.Context()
-
-	content, digest, mediaType, err := c.cache.GetManifestContent(ctx, info.Host, info.Image, info.Manifests)
+	err = c.cidn.ManifestDigest(ctx, info.Host, info.Image, digest)
 	if err != nil {
-		c.logger.Warn("manifest missed", "phase", phase, "host", info.Host, "image", info.Image, "manifest", info.Manifests, "error", err)
-		return false
+		return 0, fmt.Errorf("cache blob with cidn error: %w", err)
+	}
+	err = c.cache.RelinkManifest(ctx, info.Host, info.Image, tag, digest)
+	if err == nil {
+		c.logger.Info("relink manifest", "info", info)
+		return 0, nil
 	}
 
-	c.logger.Info("manifest hit", "phase", phase, "host", info.Host, "image", info.Image, "manifest", info.Manifests, "digest", digest)
+	return 0, fmt.Errorf("failed to relink manifest after caching blob with CIDN")
+}
+
+func (c *Manifests) serveCache(rw http.ResponseWriter, r *http.Request, info *PathInfo) bool {
+	content, digest, mediaType, err := c.cache.GetManifestContent(r.Context(), info.Host, info.Image, info.Manifests)
+	if err != nil {
+		c.logger.Warn("manifest missed", "host", info.Host, "image", info.Image, "manifest", info.Manifests, "error", err)
+		return false
+	}
+	c.logger.Info("manifest hit", "host", info.Host, "image", info.Image, "manifest", info.Manifests, "digest", digest)
 
 	length := strconv.FormatInt(int64(len(content)), 10)
-
-	if recache {
-		c.manifestCache.Put(info, cacheValue{
-			Digest:    digest,
-			MediaType: mediaType,
-			Length:    length,
-		})
-	}
 
 	rw.Header().Set("Docker-Content-Digest", digest)
 	rw.Header().Set("Content-Type", mediaType)
@@ -454,6 +295,5 @@ func (c *Manifests) serveCachedManifest(rw http.ResponseWriter, r *http.Request,
 	if r.Method != http.MethodHead {
 		rw.Write(content)
 	}
-
 	return true
 }

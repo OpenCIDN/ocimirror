@@ -56,8 +56,7 @@ type flagpole struct {
 	TokenPublicKeyFile string
 	TokenURL           string
 
-	BlobCacheDuration time.Duration
-	NoRedirect        bool
+	NoRedirect bool
 
 	Kubeconfig            string
 	Master                string
@@ -66,10 +65,9 @@ type flagpole struct {
 
 func NewCommand() *cobra.Command {
 	flags := &flagpole{
-		Address:           ":18002",
-		BlobCacheDuration: 1 * time.Minute,
-		SignLink:          true,
-		LinkExpires:       24 * time.Hour,
+		Address:     ":18002",
+		SignLink:    true,
+		LinkExpires: 24 * time.Hour,
 	}
 
 	cmd := &cobra.Command{
@@ -99,7 +97,6 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&flags.TokenPublicKeyFile, "token-public-key-file", flags.TokenPublicKeyFile, "Token public key file")
 	cmd.Flags().StringVar(&flags.TokenURL, "token-url", flags.TokenURL, "Token url")
 
-	cmd.Flags().DurationVar(&flags.BlobCacheDuration, "blob-cache-duration", flags.BlobCacheDuration, "Blob cache duration")
 	cmd.Flags().BoolVar(&flags.NoRedirect, "no-redirect", flags.NoRedirect, "Disable blob redirects and serve blobs directly")
 
 	cmd.Flags().StringVar(&flags.Kubeconfig, "kubeconfig", flags.Kubeconfig, "Path to the kubeconfig file to use")
@@ -145,7 +142,6 @@ func runE(ctx context.Context, flags *flagpole) error {
 	blobsOpts = append(blobsOpts,
 		blobs.WithCache(sdcache),
 		blobs.WithLogger(logger),
-		blobs.WithBlobCacheDuration(flags.BlobCacheDuration),
 		blobs.WithNoRedirect(flags.NoRedirect),
 	)
 

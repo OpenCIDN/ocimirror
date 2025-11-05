@@ -42,9 +42,7 @@ type Blobs struct {
 	logger     *slog.Logger
 	cache      *cache.Cache
 
-	blobCacheDuration time.Duration
-	blobCache         *blobsCache
-	authenticator     *token.Authenticator
+	authenticator *token.Authenticator
 
 	noRedirect bool
 
@@ -88,16 +86,6 @@ func WithNoRedirect(noRedirect bool) Option {
 	}
 }
 
-func WithBlobCacheDuration(blobCacheDuration time.Duration) Option {
-	return func(c *Blobs) error {
-		if blobCacheDuration < 10*time.Second {
-			blobCacheDuration = 10 * time.Second
-		}
-		c.blobCacheDuration = blobCacheDuration
-		return nil
-	}
-}
-
 func WithCIDNClient(cidnClient versioned.Interface, blobInformer informers.BlobInformer, destination string) Option {
 	return func(c *Blobs) error {
 		c.cidn.Client = cidnClient
@@ -109,19 +97,13 @@ func WithCIDNClient(cidnClient versioned.Interface, blobInformer informers.BlobI
 
 func NewBlobs(opts ...Option) (*Blobs, error) {
 	c := &Blobs{
-		logger:            slog.Default(),
-		httpClient:        http.DefaultClient,
-		blobCacheDuration: time.Hour,
+		logger:     slog.Default(),
+		httpClient: http.DefaultClient,
 	}
 
 	for _, opt := range opts {
 		opt(c)
 	}
-
-	ctx := context.Background()
-
-	c.blobCache = newBlobsCache(c.blobCacheDuration)
-	c.blobCache.Start(ctx, c.logger)
 
 	return c, nil
 }
@@ -200,22 +182,6 @@ func (b *Blobs) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 func (b *Blobs) serveCache(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t *token.Token) bool {
 	ctx := r.Context()
 
-	value, ok := b.blobCache.Get(info.Blobs)
-	if ok {
-		if value.Error != nil {
-			b.logger.Info("Cache hit with error", "digest", info.Blobs, "error", value.Error, "statusCode", value.StatusCode)
-			utils.ServeError(rw, r, value.Error, value.StatusCode)
-			return true
-		}
-
-		if b.serveCachedBlobHead(rw, r, value.Size) {
-			return true
-		}
-
-		b.serveCachedBlob(rw, r, info, t, value.ModTime, value.Size)
-		return true
-	}
-
 	stat, err := b.cache.StatBlob(ctx, info.Blobs)
 	if err == nil {
 		if b.serveCachedBlobHead(rw, r, stat.Size()) {
@@ -233,7 +199,6 @@ func (b *Blobs) Serve(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t
 		return
 	}
 
-	// Use CIDN for blob syncing if configured
 	if b.cidn.Client != nil {
 		err := b.cidn.Blob(r.Context(), info.Host, info.Image, info.Blobs)
 		if err != nil {
@@ -253,11 +218,9 @@ func (b *Blobs) Serve(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t
 			return
 		}
 	} else {
-		// Synchronously cache the blob on first request
 		sc, err := b.cacheBlob(info)
 		if err != nil {
 			b.logger.Warn("failed download file", "info", info, "error", err)
-			b.blobCache.PutError(info.Blobs, err, sc)
 			utils.ServeError(rw, r, err, sc)
 			return
 		}
@@ -352,7 +315,6 @@ func (b *Blobs) cacheBlob(info *BlobInfo) (int, error) {
 	if size != stat.Size() {
 		return 0, fmt.Errorf("size mismatch: expected %d, got %d", stat.Size(), size)
 	}
-	b.blobCache.Put(info.Blobs, stat.ModTime(), size)
 	return 0, nil
 }
 
@@ -384,11 +346,9 @@ func (b *Blobs) serveCachedBlobDirect(rw http.ResponseWriter, r *http.Request, i
 	ctx := r.Context()
 	rw.Header().Set("Content-Type", "application/octet-stream")
 
-	var err0 error
 	rs := seeker.NewReadSeekCloser(func(start int64) (io.ReadCloser, error) {
 		data, err := b.cache.GetBlobWithOffset(ctx, info.Blobs, start)
 		if err != nil {
-			err0 = err
 			return nil, err
 		}
 
@@ -409,13 +369,6 @@ func (b *Blobs) serveCachedBlobDirect(rw http.ResponseWriter, r *http.Request, i
 	defer rs.Close()
 
 	http.ServeContent(rw, r, "", modTime, rs)
-	if err0 != nil {
-		b.logger.Info("failed to serve blob", "digest", info.Blobs, "error", err0)
-		b.blobCache.PutError(info.Blobs, err0, http.StatusInternalServerError)
-		return
-	}
-
-	b.blobCache.Put(info.Blobs, modTime, size)
 }
 
 func (b *Blobs) serveCachedBlobRedirect(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t *token.Token, modTime time.Time, size int64) {
@@ -427,12 +380,9 @@ func (b *Blobs) serveCachedBlobRedirect(rw http.ResponseWriter, r *http.Request,
 	u, err := b.cache.RedirectBlob(r.Context(), info.Blobs, referer)
 	if err != nil {
 		b.logger.Info("failed to redirect blob", "digest", info.Blobs, "error", err)
-		b.blobCache.PutError(info.Blobs, errcode.ErrorCodeUnknown, http.StatusInternalServerError)
 		utils.ServeError(rw, r, errcode.ErrorCodeUnknown, 0)
 		return
 	}
-
-	b.blobCache.Put(info.Blobs, modTime, size)
 
 	b.logger.Info("Cache hit", "digest", info.Blobs, "url", u)
 	http.Redirect(rw, r, u, http.StatusTemporaryRedirect)

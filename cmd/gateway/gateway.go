@@ -47,9 +47,6 @@ type flagpole struct {
 	LinkExpires   time.Duration
 	SignLink      bool
 
-	ManifestCacheDuration  time.Duration
-	RecacheMaxWaitDuration time.Duration
-
 	Userpass        []string
 	Retry           int
 	RetryInterval   time.Duration
@@ -67,8 +64,7 @@ type flagpole struct {
 
 	ReadmeURL string
 
-	BlobCacheDuration time.Duration
-	NoRedirect        bool
+	NoRedirect bool
 
 	DefaultRegistry         string
 	OverrideDefaultRegistry map[string]string
@@ -82,11 +78,9 @@ type flagpole struct {
 
 func NewCommand() *cobra.Command {
 	flags := &flagpole{
-		Address:               ":18001",
-		BlobCacheDuration:     1 * time.Minute,
-		ManifestCacheDuration: 1 * time.Minute,
-		SignLink:              true,
-		LinkExpires:           24 * time.Hour,
+		Address:     ":18001",
+		SignLink:    true,
+		LinkExpires: 24 * time.Hour,
 	}
 
 	cmd := &cobra.Command{
@@ -101,9 +95,6 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&flags.RedirectLinks, "redirect-links", flags.RedirectLinks, "Redirect links")
 	cmd.Flags().DurationVar(&flags.LinkExpires, "link-expires", flags.LinkExpires, "Link expires")
 	cmd.Flags().BoolVar(&flags.SignLink, "sign-link", flags.SignLink, "Sign Link")
-
-	cmd.Flags().DurationVar(&flags.ManifestCacheDuration, "manifest-cache-duration", flags.ManifestCacheDuration, "Manifest cache duration")
-	cmd.Flags().DurationVar(&flags.RecacheMaxWaitDuration, "recache-max-wait-duration", flags.RecacheMaxWaitDuration, "Recache max wait duration")
 
 	cmd.Flags().StringSliceVarP(&flags.Userpass, "user", "u", flags.Userpass, "host and username and password -u user:pwd@host")
 	cmd.Flags().IntVar(&flags.Retry, "retry", flags.Retry, "Retry")
@@ -122,7 +113,6 @@ func NewCommand() *cobra.Command {
 
 	cmd.Flags().StringVar(&flags.ReadmeURL, "readme-url", flags.ReadmeURL, "Readme url")
 
-	cmd.Flags().DurationVar(&flags.BlobCacheDuration, "blob-cache-duration", flags.BlobCacheDuration, "Blob cache duration")
 	cmd.Flags().BoolVar(&flags.NoRedirect, "no-redirect", flags.NoRedirect, "Disable blob redirects and serve blobs directly")
 
 	cmd.Flags().StringVar(&flags.DefaultRegistry, "default-registry", flags.DefaultRegistry, "default registry used for non full-path docker pull, like:docker.io")
@@ -235,7 +225,6 @@ func runE(ctx context.Context, flags *flagpole) error {
 		blobsOpts := []blobs.Option{
 			blobs.WithLogger(logger),
 			blobs.WithAuthenticator(authenticator),
-			blobs.WithBlobCacheDuration(flags.BlobCacheDuration),
 			blobs.WithNoRedirect(flags.NoRedirect),
 		}
 
@@ -267,7 +256,6 @@ func runE(ctx context.Context, flags *flagpole) error {
 		}
 		manifestsOpts = append(manifestsOpts,
 			manifests.WithCache(sdcache),
-			manifests.WithManifestCacheDuration(flags.ManifestCacheDuration),
 		)
 
 		blobsOpts = append(blobsOpts,

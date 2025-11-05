@@ -49,7 +49,6 @@ type Attribute struct {
 	NoAllowlist   bool `json:"no_allowlist,omitempty"`
 	NoBlock       bool `json:"no_block,omitempty"`
 	AllowTagsList bool `json:"allow_tags_list,omitempty"`
-	CacheFirst    bool `json:"cache_first,omitempty"`
 	Weight        int  `json:"weight,omitempty"`
 
 	Host  string `json:"host,omitempty"`
