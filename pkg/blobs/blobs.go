@@ -200,22 +200,36 @@ func (b *Blobs) Serve(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t
 	}
 
 	if b.cidn.Client != nil {
-		err := b.cidn.Blob(r.Context(), info.Host, info.Image, info.Blobs)
-		if err != nil {
-			errStr := err.Error()
-			if strings.Contains(errStr, "status code: got 404") {
-				utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
-				return
-			} else if strings.Contains(errStr, "status code: got 403") {
-				utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
-				return
-			} else if strings.Contains(errStr, "status code: got 401") {
-				utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
+		if info.Host == "ollama.com" {
+			err := b.cidn.Blob(r.Context(), info.Host, info.Image, info.Blobs, true)
+			if err != nil {
+				errStr := err.Error()
+				if strings.Contains(errStr, "status code: got 404") {
+					utils.ServeError(rw, r, errcode.ErrorCodeDenied, http.StatusNotFound)
+					return
+				}
+				b.logger.Warn("failed to sync blob with CIDN", "error", err)
+				utils.ServeError(rw, r, errcode.ErrorCodeUnknown, 0)
+			}
+
+		} else {
+			err := b.cidn.Blob(r.Context(), info.Host, info.Image, info.Blobs, false)
+			if err != nil {
+				errStr := err.Error()
+				if strings.Contains(errStr, "status code: got 404") {
+					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
+					return
+				} else if strings.Contains(errStr, "status code: got 403") {
+					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
+					return
+				} else if strings.Contains(errStr, "status code: got 401") {
+					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
+					return
+				}
+				b.logger.Warn("failed to sync blob with CIDN", "error", err)
+				utils.ServeError(rw, r, errcode.ErrorCodeUnknown, 0)
 				return
 			}
-			b.logger.Warn("failed to sync blob with CIDN", "error", err)
-			utils.ServeError(rw, r, errcode.ErrorCodeUnknown, 0)
-			return
 		}
 	} else {
 		sc, err := b.cacheBlob(info)

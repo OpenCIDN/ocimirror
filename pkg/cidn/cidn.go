@@ -29,7 +29,7 @@ type Response struct {
 	Headers    map[string]string
 }
 
-func (c *CIDN) Blob(ctx context.Context, host, image, digest string) error {
+func (c *CIDN) Blob(ctx context.Context, host, image, digest string, forceAcceptRanges bool) error {
 	sourceURL := fmt.Sprintf("https://%s/v2/%s/blobs/%s", host, image, digest)
 	cachePath := registry.BlobCachePath(digest)
 
@@ -69,7 +69,9 @@ func (c *CIDN) Blob(ctx context.Context, host, image, digest string) error {
 				Annotations: annotations,
 			},
 			Spec: v1alpha1.BlobSpec{
+				MaximumRetry:     3,
 				MaximumRunning:   3,
+				MaximumPending:   1,
 				MinimumChunkSize: 128 * 1024 * 1024,
 				Source: []v1alpha1.BlobSource{
 					{
@@ -84,7 +86,8 @@ func (c *CIDN) Blob(ctx context.Context, host, image, digest string) error {
 						SkipIfExists: true,
 					},
 				},
-				ContentSha256: registry.CleanDigest(digest),
+				ForceAcceptRanges: forceAcceptRanges,
+				ContentSha256:     registry.CleanDigest(digest),
 			},
 		}, metav1.CreateOptions{})
 		if err != nil && !apierrors.IsAlreadyExists(err) {
@@ -186,8 +189,8 @@ func (c *CIDN) ManifestTag(ctx context.Context, host, image, tag string) (*Respo
 	}
 }
 
-func (c *CIDN) ManifestDigest(ctx context.Context, host, image, digest string) error {
-	sourceURL := fmt.Sprintf("https://%s/v2/%s/manifests/%s", host, image, digest)
+func (c *CIDN) ManifestDigest(ctx context.Context, host, image, digest, manifest string) error {
+	sourceURL := fmt.Sprintf("https://%s/v2/%s/manifests/%s", host, image, manifest)
 	cachePath := registry.BlobCachePath(digest)
 
 	blobName := manifestName(host, image, digest)
@@ -226,7 +229,9 @@ func (c *CIDN) ManifestDigest(ctx context.Context, host, image, digest string) e
 				Annotations: annotations,
 			},
 			Spec: v1alpha1.BlobSpec{
+				MaximumRetry:   3,
 				MaximumRunning: 1,
+				MaximumPending: 1,
 				ChunksNumber:   1,
 				Source: []v1alpha1.BlobSource{
 					{

@@ -81,34 +81,48 @@ func (c *Manifests) Serve(rw http.ResponseWriter, r *http.Request, info *PathInf
 	// Use CIDN for manifest syncing if configured
 	if c.cidn.Client != nil {
 		// Synchronously cache the manifest
-		sc, err := c.cacheManifestWithCIDN(info)
-		if err != nil {
-			errStr := err.Error()
-			if strings.Contains(errStr, "status code: got 404") {
-				utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
-				return
-			} else if strings.Contains(errStr, "status code: got 403") {
-				utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
-				return
-			} else if strings.Contains(errStr, "status code: got 401") {
-				utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
-				return
-			} else if strings.Contains(errStr, "status code: got 412") {
-				// For gcr.io
-				// unexpected status code 412 Precondition Failed: Container Registry is deprecated and shutting down, please use the auto migration tool to migrate to Artifact Registry (gcloud artifacts docker upgrade migrate --projects='arrikto'). For more details see: https://cloud.google.com/artifact-registry/docs/transition/auto-migrate-gcr-ar"
-				utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
-				return
-			} else if strings.Contains(errStr, "unsupported target response") {
-				utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
-				return
-			} else if strings.Contains(errStr, "DENIED") {
-				utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
+		if info.Host == "ollama.com" {
+			sc, err := c.cacheManifestWithCIDNForOllama(info)
+			if err != nil {
+				errStr := err.Error()
+				if strings.Contains(errStr, "status code: got 404") {
+					utils.ServeError(rw, r, errcode.ErrorCodeDenied, http.StatusNotFound)
+					return
+				}
+				c.logger.Warn("failed to cache manifest with cidn", "info", info, "error", err)
+				utils.ServeError(rw, r, err, sc)
 				return
 			}
+		} else {
+			sc, err := c.cacheManifestWithCIDN(info)
+			if err != nil {
+				errStr := err.Error()
+				if strings.Contains(errStr, "status code: got 404") {
+					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
+					return
+				} else if strings.Contains(errStr, "status code: got 403") {
+					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
+					return
+				} else if strings.Contains(errStr, "status code: got 401") {
+					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
+					return
+				} else if strings.Contains(errStr, "status code: got 412") {
+					// For gcr.io
+					// unexpected status code 412 Precondition Failed: Container Registry is deprecated and shutting down, please use the auto migration tool to migrate to Artifact Registry (gcloud artifacts docker upgrade migrate --projects='arrikto'). For more details see: https://cloud.google.com/artifact-registry/docs/transition/auto-migrate-gcr-ar"
+					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
+					return
+				} else if strings.Contains(errStr, "unsupported target response") {
+					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
+					return
+				} else if strings.Contains(errStr, "DENIED") {
+					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
+					return
+				}
 
-			c.logger.Warn("failed to cache manifest with cidn", "info", info, "error", err)
-			utils.ServeError(rw, r, err, sc)
-			return
+				c.logger.Warn("failed to cache manifest with cidn", "info", info, "error", err)
+				utils.ServeError(rw, r, err, sc)
+				return
+			}
 		}
 	} else {
 		// Synchronously cache the manifest
@@ -244,7 +258,7 @@ func (c *Manifests) cacheManifestWithCIDN(info *PathInfo) (int, error) {
 		tag    string
 		digest string
 	)
-	if !info.IsDigestManifests && info.Host != "ollama.com" {
+	if !info.IsDigestManifests {
 		resp, err := c.cidn.ManifestTag(ctx, info.Host, info.Image, info.Manifests)
 		if err != nil {
 			return 0, fmt.Errorf("request with cidn error: %w", err)
@@ -265,10 +279,50 @@ func (c *Manifests) cacheManifestWithCIDN(info *PathInfo) (int, error) {
 		return 0, nil
 	}
 
-	err = c.cidn.ManifestDigest(ctx, info.Host, info.Image, digest)
+	err = c.cidn.ManifestDigest(ctx, info.Host, info.Image, digest, digest)
 	if err != nil {
 		return 0, fmt.Errorf("cache blob with cidn error: %w", err)
 	}
+
+	err = c.cache.RelinkManifest(ctx, info.Host, info.Image, tag, digest)
+	if err == nil {
+		c.logger.Info("relink manifest", "info", info)
+		return 0, nil
+	}
+
+	return 0, fmt.Errorf("failed to relink manifest after caching blob with CIDN")
+}
+
+func (c *Manifests) cacheManifestWithCIDNForOllama(info *PathInfo) (int, error) {
+	ctx := context.Background()
+
+	if info.IsDigestManifests {
+		return 0, fmt.Errorf("ollama.com does not support digest-based manifest retrieval")
+	}
+
+	resp, err := c.cidn.ManifestTag(ctx, info.Host, info.Image, info.Manifests)
+	if err != nil {
+		return 0, fmt.Errorf("request with cidn error: %w", err)
+	}
+
+	digest := resp.Headers["ollama-content-digest"]
+	if digest == "" {
+		return 0, errcode.ErrorCodeDenied
+	}
+	digest = registry.EnsureDigestPrefix(digest)
+	tag := info.Manifests
+
+	err = c.cache.RelinkManifest(ctx, info.Host, info.Image, tag, digest)
+	if err == nil {
+		c.logger.Info("relink manifest", "info", info)
+		return 0, nil
+	}
+
+	err = c.cidn.ManifestDigest(ctx, info.Host, info.Image, digest, tag)
+	if err != nil {
+		return 0, fmt.Errorf("cache blob with cidn error: %w", err)
+	}
+
 	err = c.cache.RelinkManifest(ctx, info.Host, info.Image, tag, digest)
 	if err == nil {
 		c.logger.Info("relink manifest", "info", info)

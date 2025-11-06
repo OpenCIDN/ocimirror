@@ -3,7 +3,7 @@ module github.com/OpenCIDN/ocimirror
 go 1.24.7
 
 require (
-	github.com/OpenCIDN/cidn v0.0.28
+	github.com/OpenCIDN/cidn v0.0.29
 	github.com/aws/aws-sdk-go v1.55.8
 	github.com/docker/distribution v2.8.3+incompatible
 	github.com/emicklei/go-restful-openapi/v2 v2.11.0
