@@ -259,7 +259,7 @@ func (c *Manifests) cacheManifestWithCIDN(info *PathInfo) (int, error) {
 		digest string
 	)
 	if !info.IsDigestManifests {
-		resp, err := c.cidn.ManifestTag(ctx, info.Host, info.Image, info.Manifests, false)
+		resp, err := c.cidn.ManifestTag(ctx, info.Host, info.Image, info.Manifests)
 		if err != nil {
 			return 0, fmt.Errorf("request with cidn error: %w", err)
 		}
@@ -300,7 +300,7 @@ func (c *Manifests) cacheManifestWithCIDNForOllama(info *PathInfo) (int, error) 
 		return 0, fmt.Errorf("ollama.com does not support digest-based manifest retrieval")
 	}
 
-	resp, err := c.cidn.ManifestTag(ctx, info.Host, info.Image, info.Manifests, false)
+	resp, err := c.cidn.ManifestTag(ctx, info.Host, info.Image, info.Manifests)
 	if err != nil {
 		return 0, fmt.Errorf("request with cidn error: %w", err)
 	}

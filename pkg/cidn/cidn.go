@@ -114,7 +114,7 @@ func (c *CIDN) Blob(ctx context.Context, host, image, digest string, forceAccept
 	}
 }
 
-func (c *CIDN) ManifestTag(ctx context.Context, host, image, tag string, noWait bool) (*Response, error) {
+func (c *CIDN) ManifestTag(ctx context.Context, host, image, tag string) (*Response, error) {
 	u := &url.URL{
 		Scheme: "https",
 		Host:   host,
@@ -174,15 +174,6 @@ func (c *CIDN) ManifestTag(ctx context.Context, host, image, tag string, noWait 
 		if err != nil && !apierrors.IsAlreadyExists(err) {
 			return nil, fmt.Errorf("create chunk error: %w", err)
 		}
-	}
-
-	if noWait {
-		// When not waiting, we need to return a response but we don't have status yet
-		// Return a placeholder response - caller should handle this appropriately
-		return &Response{
-			StatusCode: http.StatusAccepted,
-			Headers:    map[string]string{},
-		}, nil
 	}
 
 	ch, err := waitForChunkCompletion(ctx, c.ChunkInformer, chunkName, 10*time.Minute)

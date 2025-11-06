@@ -43,8 +43,8 @@ func SyncImage(ctx context.Context, g *errgroup.Group, cidnClient *cidn.CIDN, ca
 		tag := reference
 
 		// Step 1: Get the manifest tag to resolve to a digest
-		// ManifestTag needs to complete to get the digest header
-		resp, err := cidnClient.ManifestTag(ctx, host, image, tag, false)
+		// ManifestTag always waits since it's a fast HEAD request and we need the digest
+		resp, err := cidnClient.ManifestTag(ctx, host, image, tag)
 		if err != nil {
 			return fmt.Errorf("failed to get manifest tag: %w", err)
 		}
