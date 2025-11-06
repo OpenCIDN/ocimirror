@@ -38,6 +38,7 @@ type flagpole struct {
 	Images                []string
 	Platforms             []string
 	Concurrency           int
+	NoWait                bool
 }
 
 func NewCommand() *cobra.Command {
@@ -70,6 +71,7 @@ Examples:
 	cmd.Flags().BoolVar(&flags.InsecureSkipTLSVerify, "insecure-skip-tls-verify", false, "If true, the server's certificate will not be checked for validity. This will make your HTTPS connections insecure")
 	cmd.Flags().StringSliceVar(&flags.Platforms, "platform", flags.Platforms, "Platform in the format os/arch[/variant] (e.g., linux/amd64, linux/arm64, linux/arm/v7). Can be specified multiple times.")
 	cmd.Flags().IntVar(&flags.Concurrency, "concurrency", flags.Concurrency, "Number of concurrent workers for syncing images")
+	cmd.Flags().BoolVar(&flags.NoWait, "no-wait", false, "Exit after creating all blobs, without waiting for them to complete")
 	return cmd
 }
 
@@ -151,7 +153,7 @@ func runE(ctx context.Context, flags *flagpole) error {
 		}
 
 		logger.Info("Processing image", "image", imageRef, "platforms", platformFilters)
-		if err := sync.SyncImage(ctx, g, cidnClient, sdcache, imageRef, platformFilters); err != nil {
+		if err := sync.SyncImage(ctx, g, cidnClient, sdcache, imageRef, platformFilters, flags.NoWait); err != nil {
 			return fmt.Errorf("failed to sync image %s: %w", imageRef, err)
 		}
 	}

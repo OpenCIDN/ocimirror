@@ -279,7 +279,7 @@ func (c *Manifests) cacheManifestWithCIDN(info *PathInfo) (int, error) {
 		return 0, nil
 	}
 
-	err = c.cidn.ManifestDigest(ctx, info.Host, info.Image, digest, digest)
+	err = c.cidn.ManifestDigest(ctx, info.Host, info.Image, digest, digest, false)
 	if err != nil {
 		return 0, fmt.Errorf("cache blob with cidn error: %w", err)
 	}
@@ -318,7 +318,7 @@ func (c *Manifests) cacheManifestWithCIDNForOllama(info *PathInfo) (int, error) 
 		return 0, nil
 	}
 
-	err = c.cidn.ManifestDigest(ctx, info.Host, info.Image, digest, tag)
+	err = c.cidn.ManifestDigest(ctx, info.Host, info.Image, digest, tag, false)
 	if err != nil {
 		return 0, fmt.Errorf("cache blob with cidn error: %w", err)
 	}

@@ -29,7 +29,7 @@ type Response struct {
 	Headers    map[string]string
 }
 
-func (c *CIDN) Blob(ctx context.Context, host, image, digest string, forceAcceptRanges bool) error {
+func (c *CIDN) Blob(ctx context.Context, host, image, digest string, forceAcceptRanges bool, noWait bool) error {
 	sourceURL := fmt.Sprintf("https://%s/v2/%s/blobs/%s", host, image, digest)
 	cachePath := registry.BlobCachePath(digest)
 
@@ -93,6 +93,10 @@ func (c *CIDN) Blob(ctx context.Context, host, image, digest string, forceAccept
 		if err != nil && !apierrors.IsAlreadyExists(err) {
 			return err
 		}
+	}
+
+	if noWait {
+		return nil
 	}
 
 	// Wait without extra timeout; rely on ctx
@@ -189,7 +193,7 @@ func (c *CIDN) ManifestTag(ctx context.Context, host, image, tag string) (*Respo
 	}
 }
 
-func (c *CIDN) ManifestDigest(ctx context.Context, host, image, digest, manifest string) error {
+func (c *CIDN) ManifestDigest(ctx context.Context, host, image, digest, manifest string, noWait bool) error {
 	sourceURL := fmt.Sprintf("https://%s/v2/%s/manifests/%s", host, image, manifest)
 	cachePath := registry.BlobCachePath(digest)
 
@@ -255,6 +259,10 @@ func (c *CIDN) ManifestDigest(ctx context.Context, host, image, digest, manifest
 		if err != nil && !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("create blob error: %w", err)
 		}
+	}
+
+	if noWait {
+		return nil
 	}
 
 	// Wait with a 10m timeout like original
