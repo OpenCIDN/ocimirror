@@ -220,7 +220,7 @@ func (c *CIDN) ManifestDigest(ctx context.Context, host, image, digest, manifest
 		// Create destination URL for writing to storage backend
 		// Format: {storageName}://{path}
 		destURL := fmt.Sprintf("%s://%s", c.Destination, cachePath)
-		
+
 		_, err = chunks.Create(ctx, &v1alpha1.Chunk{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:        chunkName,
