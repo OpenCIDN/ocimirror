@@ -9,6 +9,7 @@ import (
 
 	"github.com/OpenCIDN/ocimirror/internal/format"
 	"github.com/OpenCIDN/ocimirror/internal/spec"
+	"github.com/OpenCIDN/ocimirror/internal/utils"
 	"github.com/OpenCIDN/ocimirror/pkg/cache"
 	"github.com/OpenCIDN/ocimirror/pkg/cidn"
 	"golang.org/x/sync/errgroup"
@@ -21,6 +22,8 @@ func SyncImage(ctx context.Context, g *errgroup.Group, cidnClient *cidn.CIDN, ca
 	if err != nil {
 		return fmt.Errorf("failed to parse image reference: %w", err)
 	}
+
+	host, image = utils.CorrectImage(host, image)
 
 	if isDigest {
 		// Sync the platform-specific manifest
@@ -53,9 +56,6 @@ func SyncImage(ctx context.Context, g *errgroup.Group, cidnClient *cidn.CIDN, ca
 
 		// Extract the digest from response headers
 		digest := resp.Headers["docker-content-digest"]
-		if digest == "" {
-			digest = resp.Headers["Docker-Content-Digest"]
-		}
 		if digest == "" {
 			return fmt.Errorf("no digest found in manifest tag response")
 		}

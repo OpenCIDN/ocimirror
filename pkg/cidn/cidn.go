@@ -299,26 +299,17 @@ func waitForBlob(ctx context.Context, informer informers.BlobInformer, name stri
 	handler := k8scache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			if b, ok := obj.(*v1alpha1.Blob); ok && b.Name == name {
-				select {
-				case statusChan <- b:
-				default:
-				}
+				statusChan <- b
 			}
 		},
 		UpdateFunc: func(_, newObj interface{}) {
 			if b, ok := newObj.(*v1alpha1.Blob); ok && b.Name == name {
-				select {
-				case statusChan <- b:
-				default:
-				}
+				statusChan <- b
 			}
 		},
 		DeleteFunc: func(obj interface{}) {
 			if b, ok := obj.(*v1alpha1.Blob); ok && b.Name == name {
-				select {
-				case statusChan <- nil:
-				default:
-				}
+				statusChan <- nil
 			}
 		},
 	}
@@ -327,14 +318,6 @@ func waitForBlob(ctx context.Context, informer informers.BlobInformer, name stri
 		return nil, err
 	}
 	defer informer.Informer().RemoveEventHandler(reg)
-
-	// Push current state if present
-	if b, err := informer.Lister().Get(name); err == nil {
-		select {
-		case statusChan <- b:
-		default:
-		}
-	}
 
 	if timeout > 0 {
 		var cancel context.CancelFunc
@@ -367,26 +350,17 @@ func waitForChunkCompletion(ctx context.Context, informer informers.ChunkInforme
 	handler := k8scache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			if ch, ok := obj.(*v1alpha1.Chunk); ok && ch.Name == name {
-				select {
-				case statusChan <- ch:
-				default:
-				}
+				statusChan <- ch
 			}
 		},
 		UpdateFunc: func(_, newObj interface{}) {
 			if ch, ok := newObj.(*v1alpha1.Chunk); ok && ch.Name == name {
-				select {
-				case statusChan <- ch:
-				default:
-				}
+				statusChan <- ch
 			}
 		},
 		DeleteFunc: func(obj interface{}) {
 			if ch, ok := obj.(*v1alpha1.Chunk); ok && ch.Name == name {
-				select {
-				case statusChan <- nil:
-				default:
-				}
+				statusChan <- nil
 			}
 		},
 	}
@@ -395,14 +369,6 @@ func waitForChunkCompletion(ctx context.Context, informer informers.ChunkInforme
 		return nil, err
 	}
 	defer func() { _ = informer.Informer().RemoveEventHandler(reg) }()
-
-	// Push current state if present
-	if ch, err := informer.Lister().Get(name); err == nil {
-		select {
-		case statusChan <- ch:
-		default:
-		}
-	}
 
 	if timeout > 0 {
 		var cancel context.CancelFunc
@@ -428,7 +394,6 @@ func waitForChunkCompletion(ctx context.Context, informer informers.ChunkInforme
 				if !ch.Status.Retryable {
 					return ch, nil
 				}
-				// else keep waiting while retryable
 			}
 		}
 	}
