@@ -39,10 +39,14 @@ func (m *memoryCache) get(key string) ([]byte, bool) {
 	}
 
 	// Check if expired
-	if time.Now().After(item.expiration) {
+	now := time.Now()
+	if now.After(item.expiration) {
 		// Remove expired item to prevent memory leak
 		m.mu.Lock()
-		delete(m.items, key)
+		// Double-check after acquiring write lock to handle race conditions
+		if item, ok := m.items[key]; ok && now.After(item.expiration) {
+			delete(m.items, key)
+		}
 		m.mu.Unlock()
 		return nil, false
 	}
@@ -58,7 +62,9 @@ func (m *memoryCache) set(key string, value []byte, ttl time.Duration) {
 	// If we're at capacity and adding a new key, evict oldest
 	if len(m.items) >= m.maxSize {
 		if _, exists := m.items[key]; !exists {
-			// Evict one item (simple approach - could be improved with LRU)
+			// Simple eviction: remove first item from map iteration
+			// Note: Map iteration order is non-deterministic in Go, which is acceptable
+			// for this cache as we prioritize simplicity over LRU semantics
 			for k := range m.items {
 				delete(m.items, k)
 				break

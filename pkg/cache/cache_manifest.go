@@ -96,10 +96,7 @@ func (c *Cache) GetManifestContent(ctx context.Context, host, image, tagOrBlob s
 			if err == nil && len(entry.Content) > 0 {
 				return entry.Content, entry.Digest, entry.MediaType, nil
 			}
-			// Log warning if cached data is corrupted
-			if err != nil {
-				// Silently ignore corrupted cache entries and fetch from storage
-			}
+			// Corrupted cache entry - fall through to fetch from storage
 		}
 	}
 
