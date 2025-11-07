@@ -77,6 +77,13 @@ func (c *Cache) PutManifestContent(ctx context.Context, host, image, tagOrBlob s
 	return n, hash, mediaType, nil
 }
 
+// manifestCacheEntry represents a cached manifest entry
+type manifestCacheEntry struct {
+	Digest    string `json:"digest"`
+	MediaType string `json:"mediaType"`
+	Content   []byte `json:"content"`
+}
+
 func (c *Cache) GetManifestContent(ctx context.Context, host, image, tagOrBlob string) ([]byte, string, string, error) {
 	// Create a unique cache key for this manifest using base64 encoding to handle special characters
 	cacheKey := base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s\x00%s\x00%s", host, image, tagOrBlob)))
@@ -84,10 +91,14 @@ func (c *Cache) GetManifestContent(ctx context.Context, host, image, tagOrBlob s
 	// Check in-memory cache first
 	if c.manifestMemCache != nil {
 		if cached, ok := c.manifestMemCache.get(cacheKey); ok {
-			// Parse the cached data: first line is digest, second line is mediaType, rest is content
-			lines := strings.SplitN(string(cached), "\n", 3)
-			if len(lines) == 3 {
-				return []byte(lines[2]), lines[0], lines[1], nil
+			var entry manifestCacheEntry
+			err := json.Unmarshal(cached, &entry)
+			if err == nil && len(entry.Content) > 0 {
+				return entry.Content, entry.Digest, entry.MediaType, nil
+			}
+			// Log warning if cached data is corrupted
+			if err != nil {
+				// Silently ignore corrupted cache entries and fetch from storage
 			}
 		}
 	}
@@ -123,10 +134,16 @@ func (c *Cache) GetManifestContent(ctx context.Context, host, image, tagOrBlob s
 		return nil, "", "", fmt.Errorf("invalid content: %w: %s", err, string(content))
 	}
 
-	// Store in memory cache: digest + newline + mediaType + newline + content
+	// Store in memory cache using JSON serialization
 	if c.manifestMemCache != nil {
-		cached := fmt.Sprintf("%s\n%s\n%s", digest, mediaType, string(content))
-		c.manifestMemCache.set(cacheKey, []byte(cached), c.memoryCacheTTL)
+		entry := manifestCacheEntry{
+			Digest:    digest,
+			MediaType: mediaType,
+			Content:   content,
+		}
+		if cached, err := json.Marshal(entry); err == nil {
+			c.manifestMemCache.set(cacheKey, cached, c.memoryCacheTTL)
+		}
 	}
 
 	return content, digest, mediaType, nil

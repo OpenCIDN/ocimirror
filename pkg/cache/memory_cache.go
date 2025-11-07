@@ -30,10 +30,10 @@ func newMemoryCache(maxSize int) *memoryCache {
 
 // get retrieves a value from the cache
 func (m *memoryCache) get(key string) ([]byte, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
+	m.mu.RLock()
 	item, ok := m.items[key]
+	m.mu.RUnlock()
+
 	if !ok {
 		return nil, false
 	}
@@ -41,7 +41,9 @@ func (m *memoryCache) get(key string) ([]byte, bool) {
 	// Check if expired
 	if time.Now().After(item.expiration) {
 		// Remove expired item to prevent memory leak
+		m.mu.Lock()
 		delete(m.items, key)
+		m.mu.Unlock()
 		return nil, false
 	}
 

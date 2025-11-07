@@ -42,8 +42,8 @@ func TestMemoryCacheIntegrationWithManifestCache(t *testing.T) {
 	}
 
 	cacheKey := "docker.io/library/nginx/latest"
-	// Format: digest + newline + mediaType + newline + content
-	cachedData := "sha256:abc123\napplication/vnd.oci.image.manifest.v1+json\n{\"test\":\"manifest\"}"
+	// Format: JSON serialized manifestCacheEntry
+	cachedData := `{"digest":"sha256:abc123","mediaType":"application/vnd.oci.image.manifest.v1+json","content":"eyJ0ZXN0IjoibWFuaWZlc3QifQ=="}`
 
 	// Manually add to manifest memory cache
 	c.manifestMemCache.set(cacheKey, []byte(cachedData), c.memoryCacheTTL)
