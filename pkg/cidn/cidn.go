@@ -193,29 +193,23 @@ func (c *CIDN) ManifestDigest(ctx context.Context, host, image, digest, manifest
 	sourceURL := fmt.Sprintf("https://%s/v2/%s/manifests/%s", host, image, manifest)
 	cachePath := registry.BlobCachePath(digest)
 
-	blobName := manifestName(host, image, digest)
-	blobs := c.Client.TaskV1alpha1().Blobs()
+	chunkName := manifestName(host, image, digest)
+	chunks := c.Client.TaskV1alpha1().Chunks()
 
-	var create bool
-	if blob, err := c.BlobInformer.Lister().Get(blobName); err == nil {
-		switch blob.Status.Phase {
-		case v1alpha1.BlobPhaseSucceeded:
-			err := blobs.Delete(ctx, blobName, metav1.DeleteOptions{})
-			if err != nil {
-				return fmt.Errorf("failed to delete blob %s: %w", blobName, err)
+	if chunk, err := c.ChunkInformer.Lister().Get(chunkName); err == nil {
+		switch chunk.Status.Phase {
+		case v1alpha1.ChunkPhaseSucceeded:
+			return nil
+		case v1alpha1.ChunkPhaseFailed:
+			if !chunk.Status.Retryable {
+				return fmt.Errorf("CIDN manifest sync failed: %s", firstNonEmptyConditionMessage(chunk.Status.Conditions, "manifest sync failed"))
 			}
-			create = true
-		case v1alpha1.BlobPhaseFailed:
-			return fmt.Errorf("blob sync failed: %s", firstNonEmptyConditionMessage(blob.Status.Conditions, "blob sync failed"))
 		}
 	} else if !apierrors.IsNotFound(err) {
-		return err
+		return fmt.Errorf("get chunk from informer error: %w", err)
 	} else {
-		create = true
-	}
-
-	if create {
 		displayName := fmt.Sprintf("%s/%s@%s", formatHost(host), image, digest)
+
 		annotations := map[string]string{
 			v1alpha1.WebuiDisplayNameAnnotation: displayName,
 			v1alpha1.WebuiTagAnnotation:         "manifest",
@@ -223,52 +217,60 @@ func (c *CIDN) ManifestDigest(ctx context.Context, host, image, digest, manifest
 			v1alpha1.WebuiGroupAnnotation:       fmt.Sprintf("%s/%s", formatHost(host), image),
 		}
 
-		_, err := blobs.Create(ctx, &v1alpha1.Blob{
+		// Create destination URL for writing to storage backend
+		// Format: {storageName}://{path}
+		destURL := fmt.Sprintf("%s://%s", c.Destination, cachePath)
+		
+		_, err = chunks.Create(ctx, &v1alpha1.Chunk{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:        blobName,
+				Name:        chunkName,
 				Annotations: annotations,
 			},
-			Spec: v1alpha1.BlobSpec{
-				MaximumRetry:   3,
-				MaximumRunning: 1,
-				MaximumPending: 1,
-				ChunksNumber:   1,
-				Source: []v1alpha1.BlobSource{
-					{
-						URL:        sourceURL,
-						BearerName: bearerName(host, image),
+			Spec: v1alpha1.ChunkSpec{
+				MaximumRetry: 3,
+				Source: v1alpha1.ChunkHTTP{
+					Request: v1alpha1.ChunkHTTPRequest{
+						Method: http.MethodGet,
+						URL:    sourceURL,
 						Headers: map[string]string{
 							"Accept": registry.OCIAcceptsValue,
 						},
 					},
-				},
-				Destination: []v1alpha1.BlobDestination{
-					{
-						Name:         c.Destination,
-						Path:         cachePath,
-						SkipIfExists: true,
+					Response: v1alpha1.ChunkHTTPResponse{
+						StatusCode: http.StatusOK,
 					},
 				},
-				ContentSha256: registry.CleanDigest(digest),
+				Destination: []v1alpha1.ChunkHTTP{
+					{
+						Request: v1alpha1.ChunkHTTPRequest{
+							Method: http.MethodPut,
+							URL:    destURL,
+						},
+						Response: v1alpha1.ChunkHTTPResponse{
+							StatusCode: http.StatusOK,
+						},
+					},
+				},
+				Sha256: registry.CleanDigest(digest),
+				BearerName: bearerName(host, image),
 			},
 		}, metav1.CreateOptions{})
 		if err != nil && !apierrors.IsAlreadyExists(err) {
-			return fmt.Errorf("create blob error: %w", err)
+			return fmt.Errorf("create chunk error: %w", err)
 		}
 	}
 
-	// Wait with a 10m timeout like original
-	b, err := waitForBlob(ctx, c.BlobInformer, blobName, 10*time.Minute)
+	ch, err := waitForChunkCompletion(ctx, c.ChunkInformer, chunkName, 10*time.Minute)
 	if err != nil {
 		return err
 	}
-	switch b.Status.Phase {
-	case v1alpha1.BlobPhaseSucceeded:
+	switch ch.Status.Phase {
+	case v1alpha1.ChunkPhaseSucceeded:
 		return nil
-	case v1alpha1.BlobPhaseFailed:
-		return fmt.Errorf("blob sync failed: %s", firstNonEmptyConditionMessage(b.Status.Conditions, "blob sync failed"))
+	case v1alpha1.ChunkPhaseFailed:
+		return fmt.Errorf("CIDN manifest sync failed: %s", firstNonEmptyConditionMessage(ch.Status.Conditions, "manifest sync failed"))
 	default:
-		return fmt.Errorf("unexpected blob phase: %s", b.Status.Phase)
+		return fmt.Errorf("unexpected chunk phase: %s", ch.Status.Phase)
 	}
 }
 
