@@ -333,10 +333,10 @@ func waitForBlob(ctx context.Context, informer informers.BlobInformer, name stri
 			return nil, ctx.Err()
 		case b, ok := <-statusChan:
 			if !ok {
-				return nil, fmt.Errorf("chunk was cancel before completion")
+				return nil, fmt.Errorf("blob was cancelled before completion")
 			}
 			if b == nil {
-				return nil, fmt.Errorf("chunk was deleted before completion")
+				return nil, fmt.Errorf("blob was deleted before completion")
 			}
 			switch b.Status.Phase {
 			case v1alpha1.BlobPhaseSucceeded, v1alpha1.BlobPhaseFailed:
@@ -384,10 +384,10 @@ func waitForChunkCompletion(ctx context.Context, informer informers.ChunkInforme
 			return nil, ctx.Err()
 		case ch, ok := <-statusChan:
 			if !ok {
-				return nil, fmt.Errorf("blob was cancel before completion")
+				return nil, fmt.Errorf("chunk was cancelled before completion")
 			}
 			if ch == nil {
-				return nil, fmt.Errorf("blob was deleted before completion")
+				return nil, fmt.Errorf("chunk was deleted before completion")
 			}
 			switch ch.Status.Phase {
 			case v1alpha1.ChunkPhaseSucceeded:
