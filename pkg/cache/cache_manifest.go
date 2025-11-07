@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -77,8 +78,8 @@ func (c *Cache) PutManifestContent(ctx context.Context, host, image, tagOrBlob s
 }
 
 func (c *Cache) GetManifestContent(ctx context.Context, host, image, tagOrBlob string) ([]byte, string, string, error) {
-	// Create a unique cache key for this manifest
-	cacheKey := fmt.Sprintf("%s/%s/%s", host, image, tagOrBlob)
+	// Create a unique cache key for this manifest using base64 encoding to handle special characters
+	cacheKey := base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s\x00%s\x00%s", host, image, tagOrBlob)))
 	
 	// Check in-memory cache first
 	if c.manifestMemCache != nil {

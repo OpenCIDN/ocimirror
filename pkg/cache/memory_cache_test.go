@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -79,7 +80,8 @@ func TestMemoryCacheClear(t *testing.T) {
 
 	// Add multiple items
 	for i := 0; i < 5; i++ {
-		mc.set(string(rune(i)), []byte("value"), 1*time.Minute)
+		key := fmt.Sprintf("key%d", i)
+		mc.set(key, []byte("value"), 1*time.Minute)
 	}
 
 	// Clear all
@@ -87,7 +89,8 @@ func TestMemoryCacheClear(t *testing.T) {
 
 	// All should be gone
 	for i := 0; i < 5; i++ {
-		_, ok := mc.get(string(rune(i)))
+		key := fmt.Sprintf("key%d", i)
+		_, ok := mc.get(key)
 		if ok {
 			t.Fatal("Expected all values to be cleared")
 		}
@@ -100,7 +103,7 @@ func TestMemoryCacheMaxSize(t *testing.T) {
 
 	// Add items up to max size
 	for i := 0; i < maxSize; i++ {
-		key := string(rune('a' + i))
+		key := fmt.Sprintf("key%d", i)
 		mc.set(key, []byte("value"), 1*time.Minute)
 	}
 
@@ -125,7 +128,7 @@ func TestMemoryCacheConcurrency(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		go func(n int) {
 			for j := 0; j < 100; j++ {
-				key := string(rune(n))
+				key := fmt.Sprintf("key%d", n)
 				mc.set(key, []byte("value"), 1*time.Minute)
 				mc.get(key)
 				if j%10 == 0 {
