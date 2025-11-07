@@ -24,6 +24,11 @@ type Cache struct {
 	linkExpires   time.Duration
 	signLink      bool
 	redirectLinks *url.URL
+
+	// In-memory cache for blobs and manifests
+	blobMemCache     *memoryCache
+	manifestMemCache *memoryCache
+	memoryCacheTTL   time.Duration
 }
 
 type Option func(c *Cache)
@@ -49,6 +54,17 @@ func WithStorageDriver(storageDriver *sss.SSS) Option {
 func WithSignLink(signLink bool) Option {
 	return func(c *Cache) {
 		c.signLink = signLink
+	}
+}
+
+func WithMemoryCache(maxSize int, ttl time.Duration) Option {
+	return func(c *Cache) {
+		c.blobMemCache = newMemoryCache(maxSize)
+		c.manifestMemCache = newMemoryCache(maxSize)
+		if ttl <= 0 {
+			ttl = 5 * time.Minute // Default TTL
+		}
+		c.memoryCacheTTL = ttl
 	}
 }
 

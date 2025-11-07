@@ -38,15 +38,37 @@ func (c *Cache) GetBlobWithOffset(ctx context.Context, blob string, offset int64
 }
 
 func (c *Cache) DeleteBlob(ctx context.Context, blob string) error {
+	// Remove from memory cache if it exists
+	if c.blobMemCache != nil {
+		c.blobMemCache.delete(blob)
+	}
+	
 	cachePath := registry.BlobCachePath(blob)
 	return c.Delete(ctx, cachePath)
 }
 
 func (c *Cache) GetBlobContent(ctx context.Context, blob string) ([]byte, error) {
+	// Check in-memory cache first
+	if c.blobMemCache != nil {
+		if content, ok := c.blobMemCache.get(blob); ok {
+			return content, nil
+		}
+	}
+
 	r, err := c.GetBlob(ctx, blob)
 	if err != nil {
 		return nil, err
 	}
 	defer r.Close()
-	return io.ReadAll(r)
+	content, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+
+	// Store in memory cache
+	if c.blobMemCache != nil && len(content) > 0 {
+		c.blobMemCache.set(blob, content, c.memoryCacheTTL)
+	}
+
+	return content, nil
 }

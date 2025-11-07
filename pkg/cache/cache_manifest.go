@@ -77,6 +77,20 @@ func (c *Cache) PutManifestContent(ctx context.Context, host, image, tagOrBlob s
 }
 
 func (c *Cache) GetManifestContent(ctx context.Context, host, image, tagOrBlob string) ([]byte, string, string, error) {
+	// Create a unique cache key for this manifest
+	cacheKey := fmt.Sprintf("%s/%s/%s", host, image, tagOrBlob)
+	
+	// Check in-memory cache first
+	if c.manifestMemCache != nil {
+		if cached, ok := c.manifestMemCache.get(cacheKey); ok {
+			// Parse the cached data: first line is digest, second line is mediaType, rest is content
+			lines := strings.SplitN(string(cached), "\n", 3)
+			if len(lines) == 3 {
+				return []byte(lines[2]), lines[0], lines[1], nil
+			}
+		}
+	}
+
 	var manifestLinkPath string
 	isHash := strings.HasPrefix(tagOrBlob, "sha256:")
 	if isHash {
@@ -106,6 +120,12 @@ func (c *Cache) GetManifestContent(ctx context.Context, host, image, tagOrBlob s
 			err = errors.Join(err, cleanErr)
 		}
 		return nil, "", "", fmt.Errorf("invalid content: %w: %s", err, string(content))
+	}
+
+	// Store in memory cache: digest + newline + mediaType + newline + content
+	if c.manifestMemCache != nil {
+		cached := fmt.Sprintf("%s\n%s\n%s", digest, mediaType, string(content))
+		c.manifestMemCache.set(cacheKey, []byte(cached), c.memoryCacheTTL)
 	}
 
 	return content, digest, mediaType, nil
