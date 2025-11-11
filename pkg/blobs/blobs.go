@@ -105,6 +105,10 @@ func NewBlobs(opts ...Option) (*Blobs, error) {
 		opt(c)
 	}
 
+	if c.cache == nil {
+		return nil, errors.New("cache is required")
+	}
+
 	return c, nil
 }
 
@@ -231,6 +235,8 @@ func (b *Blobs) Serve(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t
 				return
 			}
 		}
+
+		b.cache.CleanCacheStatBlobIfError(info.Blobs)
 	} else {
 		sc, err := b.cacheBlob(info)
 		if err != nil {

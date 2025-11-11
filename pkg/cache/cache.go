@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/OpenCIDN/ocimirror/internal/registry"
+	"github.com/wzshiming/imc"
 	"github.com/wzshiming/sss"
 )
 
@@ -24,9 +25,36 @@ type Cache struct {
 	linkExpires   time.Duration
 	signLink      bool
 	redirectLinks *url.URL
+
+	blobCache    *imc.Cache[string, errPair[sss.FileInfo]]
+	blobCacheTTL time.Duration
+
+	manifestTagCache *imc.Cache[string, errPair[string]]
+	manifestCache    *imc.Cache[string, errPair[*Manifest]]
+	manifestCacheTTL time.Duration
+}
+
+type errPair[T any] struct {
+	Value T
+	Error error
 }
 
 type Option func(c *Cache)
+
+func WithManifestCache(ttl time.Duration) Option {
+	return func(c *Cache) {
+		c.manifestCacheTTL = ttl
+		c.manifestCache = imc.NewCache[string, errPair[*Manifest]]()
+		c.manifestTagCache = imc.NewCache[string, errPair[string]]()
+	}
+}
+
+func WithBlobCache(ttl time.Duration) Option {
+	return func(c *Cache) {
+		c.blobCacheTTL = ttl
+		c.blobCache = imc.NewCache[string, errPair[sss.FileInfo]]()
+	}
+}
 
 func WithLinkExpires(d time.Duration) Option {
 	return func(c *Cache) {
@@ -68,6 +96,24 @@ func NewCache(opts ...Option) (*Cache, error) {
 	_, err := c.put(context.Background(), "opencidn.txt", bytes.NewBufferString("opencidn"), nil)
 	if err != nil {
 		return nil, err
+	}
+
+	if c.manifestCache != nil {
+		go c.manifestCache.RunEvict(context.Background(), func(key string, value errPair[*Manifest]) bool {
+			return true
+		})
+	}
+
+	if c.manifestTagCache != nil {
+		go c.manifestTagCache.RunEvict(context.Background(), func(key string, value errPair[string]) bool {
+			return true
+		})
+	}
+
+	if c.blobCache != nil {
+		go c.blobCache.RunEvict(context.Background(), func(key string, value errPair[sss.FileInfo]) bool {
+			return true
+		})
 	}
 	return c, nil
 }
