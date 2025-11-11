@@ -151,8 +151,7 @@ func (c *CIDN) ManifestTag(ctx context.Context, host, image, tag string) (*Respo
 				Annotations: annotations,
 			},
 			Spec: v1alpha1.ChunkSpec{
-				MaximumRetry: 3,
-				Priority:     1,
+				MaximumRetry: 2,
 				Source: v1alpha1.ChunkHTTP{
 					Request: v1alpha1.ChunkHTTPRequest{
 						Method: http.MethodHead,
@@ -230,11 +229,10 @@ func (c *CIDN) ManifestDigest(ctx context.Context, host, image, digest, manifest
 				Annotations: annotations,
 			},
 			Spec: v1alpha1.BlobSpec{
-				MaximumRetry:   3,
+				MaximumRetry:   2,
 				MaximumRunning: 1,
 				MaximumPending: 1,
 				ChunksNumber:   1,
-				Priority:       1,
 				Source: []v1alpha1.BlobSource{
 					{
 						URL:        sourceURL,
