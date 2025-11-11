@@ -30,6 +30,7 @@ import (
 	"github.com/wzshiming/httpseek"
 	"github.com/wzshiming/sss"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/util/flowcontrol"
 )
 
 func main() {
@@ -288,6 +289,7 @@ func runE(ctx context.Context, flags *flagpole) error {
 				return fmt.Errorf("error getting config: %w", err)
 			}
 			config.TLSClientConfig.Insecure = flags.InsecureSkipTLSVerify
+			config.RateLimiter = flowcontrol.NewFakeAlwaysRateLimiter()
 
 			clientset, err := versioned.NewForConfig(config)
 			if err != nil {
