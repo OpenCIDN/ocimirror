@@ -18,12 +18,17 @@ import (
 func (c *Cache) RelinkManifest(ctx context.Context, host, image, tag string, blob string) error {
 	blob = registry.EnsureDigestPrefix(blob)
 
+	c.CleanCacheStatBlobIfError(blob)
 	_, err := c.StatBlob(ctx, blob)
 	if err != nil {
 		return err
 	}
 
 	if tag != "" {
+		if c.manifestCache != nil {
+			cacheKey := host + "/" + image + ":" + tag
+			c.CleanCacheStatManifestTag(cacheKey)
+		}
 		manifestLinkPath := registry.ManifestTagCachePath(host, image, tag)
 		err = c.PutContent(ctx, manifestLinkPath, []byte(blob))
 		if err != nil {
@@ -31,6 +36,7 @@ func (c *Cache) RelinkManifest(ctx context.Context, host, image, tag string, blo
 		}
 	}
 
+	c.CleanCacheStatManifestIfError(blob)
 	manifestBlobLinkPath := registry.ManifestRevisionsCachePath(host, image, blob)
 	err = c.PutContent(ctx, manifestBlobLinkPath, []byte(blob))
 	if err != nil {
@@ -40,10 +46,9 @@ func (c *Cache) RelinkManifest(ctx context.Context, host, image, tag string, blo
 	return nil
 }
 
-func (c *Cache) PutManifestContent(ctx context.Context, host, image, tagOrBlob string, content []byte) (int64, string, string, error) {
-	mediaType, err := getMediaType(content)
-	if err != nil {
-		return 0, "", "", fmt.Errorf("invalid content: %w: %s", err, string(content))
+func (c *Cache) PutManifestContent(ctx context.Context, host, image, tagOrBlob string, content []byte) error {
+	if !json.Valid(content) {
+		return errors.New("invalid manifest content")
 	}
 
 	h := sha256.New()
@@ -53,32 +58,90 @@ func (c *Cache) PutManifestContent(ctx context.Context, host, image, tagOrBlob s
 	isHash := strings.HasPrefix(tagOrBlob, "sha256:")
 	if isHash {
 		if tagOrBlob != hash {
-			return 0, "", "", fmt.Errorf("expected hash %s is not same to %s", tagOrBlob, hash)
+			return fmt.Errorf("expected hash %s is not same to %s", tagOrBlob, hash)
 		}
 	} else {
 		manifestLinkPath := registry.ManifestTagCachePath(host, image, tagOrBlob)
 		err := c.PutContent(ctx, manifestLinkPath, []byte(hash))
 		if err != nil {
-			return 0, "", "", fmt.Errorf("put manifest link path %s error: %w", manifestLinkPath, err)
+			return fmt.Errorf("put manifest link path %s error: %w", manifestLinkPath, err)
 		}
 	}
 
 	manifestLinkPath := registry.ManifestRevisionsCachePath(host, image, hash)
-	err = c.PutContent(ctx, manifestLinkPath, []byte(hash))
+	err := c.PutContent(ctx, manifestLinkPath, []byte(hash))
 	if err != nil {
-		return 0, "", "", fmt.Errorf("put manifest revisions path %s error: %w", manifestLinkPath, err)
+		return fmt.Errorf("put manifest revisions path %s error: %w", manifestLinkPath, err)
 	}
 
-	n, err := c.PutBlobContent(ctx, hash, content)
+	_, err = c.PutBlobContent(ctx, hash, content)
 	if err != nil {
-		return 0, "", "", fmt.Errorf("put manifest blob path %s error: %w", hash, err)
+		return fmt.Errorf("put manifest blob path %s error: %w", hash, err)
 	}
-	return n, hash, mediaType, nil
+
+	if c.manifestCache != nil {
+		if isHash {
+			c.CleanCacheStatManifestIfError(hash)
+		} else {
+			cacheKey := host + "/" + image + ":" + tagOrBlob
+			c.CleanCacheStatManifestTag(cacheKey)
+			c.CleanCacheStatManifestIfError(hash)
+		}
+	}
+
+	c.CleanCacheStatBlobIfError(hash)
+	return nil
 }
 
-func (c *Cache) GetManifestContent(ctx context.Context, host, image, tagOrBlob string) ([]byte, string, string, error) {
+func (c *Cache) GetManifestContent(ctx context.Context, host, image, tagOrBlob string) (manifest *Manifest, err error) {
 	var manifestLinkPath string
 	isHash := strings.HasPrefix(tagOrBlob, "sha256:")
+
+	if c.manifestCache != nil {
+		if isHash {
+			if mc, ok := c.manifestCache.Get(tagOrBlob); ok {
+				if mc.Error != nil {
+					return nil, mc.Error
+				}
+				return mc.Value, nil
+			}
+			defer func() {
+				c.manifestCache.SetWithTTL(tagOrBlob, errPair[*Manifest]{
+					Value: manifest,
+					Error: err,
+				}, c.manifestCacheTTL)
+			}()
+		} else {
+			cacheKey := host + "/" + image + ":" + tagOrBlob
+			if mtc, ok := c.manifestTagCache.Get(cacheKey); ok {
+				if mtc.Error != nil {
+					return nil, mtc.Error
+				}
+				if mc, ok := c.manifestCache.Get(mtc.Value); ok {
+					if mc.Error != nil {
+						return nil, mc.Error
+					}
+					return mc.Value, nil
+				}
+			}
+			defer func() {
+				if err != nil {
+					c.manifestTagCache.SetWithTTL(cacheKey, errPair[string]{
+						Error: err,
+					}, c.manifestCacheTTL)
+				} else {
+					c.manifestTagCache.SetWithTTL(cacheKey, errPair[string]{
+						Value: manifest.Digest,
+					}, c.manifestCacheTTL)
+					c.manifestCache.SetWithTTL(manifest.Digest, errPair[*Manifest]{
+						Value: manifest,
+						Error: err,
+					}, c.manifestCacheTTL)
+				}
+			}()
+		}
+	}
+
 	if isHash {
 		manifestLinkPath = registry.ManifestRevisionsCachePath(host, image, tagOrBlob[7:])
 	} else {
@@ -87,12 +150,16 @@ func (c *Cache) GetManifestContent(ctx context.Context, host, image, tagOrBlob s
 
 	digestContent, err := c.GetContent(ctx, manifestLinkPath)
 	if err != nil {
-		return nil, "", "", fmt.Errorf("get manifest link path %s error: %w", manifestLinkPath, err)
+		return nil, fmt.Errorf("get manifest link path %s error: %w", manifestLinkPath, err)
 	}
 	digest := string(digestContent)
 	content, err := c.GetBlobContent(ctx, digest)
 	if err != nil {
-		return nil, "", "", err
+		cleanErr := c.Delete(ctx, manifestLinkPath)
+		if cleanErr != nil {
+			err = errors.Join(err, cleanErr)
+		}
+		return nil, fmt.Errorf("get manifest blob %s error: %w", digest, err)
 	}
 
 	mediaType, err := getMediaType(content)
@@ -105,10 +172,20 @@ func (c *Cache) GetManifestContent(ctx context.Context, host, image, tagOrBlob s
 		if cleanErr != nil {
 			err = errors.Join(err, cleanErr)
 		}
-		return nil, "", "", fmt.Errorf("invalid content: %w: %s", err, string(content))
+		return nil, fmt.Errorf("invalid content: %w: %s", err, string(content))
 	}
 
-	return content, digest, mediaType, nil
+	return &Manifest{
+		Content:   content,
+		Digest:    digest,
+		MediaType: mediaType,
+	}, nil
+}
+
+type Manifest struct {
+	Content   []byte
+	Digest    string
+	MediaType string
 }
 
 func getMediaType(content []byte) (string, error) {
@@ -130,73 +207,6 @@ func getMediaType(content []byte) (string, error) {
 		}
 	}
 	return mediaType, nil
-}
-
-func (c *Cache) DigestManifest(ctx context.Context, host, image, tag string) (string, error) {
-	manifestLinkPath := registry.ManifestTagCachePath(host, image, tag)
-
-	digestContent, err := c.GetContent(ctx, manifestLinkPath)
-	if err != nil {
-		return "", fmt.Errorf("get manifest path %s error: %w", manifestLinkPath, err)
-	}
-	return string(digestContent), nil
-}
-
-func (c *Cache) StatManifest(ctx context.Context, host, image, tagOrBlob string) (bool, error) {
-	var manifestLinkPath string
-	isHash := strings.HasPrefix(tagOrBlob, "sha256:")
-	if isHash {
-		manifestLinkPath = registry.ManifestRevisionsCachePath(host, image, tagOrBlob[7:])
-	} else {
-		manifestLinkPath = registry.ManifestTagCachePath(host, image, tagOrBlob)
-	}
-
-	digestContent, err := c.GetContent(ctx, manifestLinkPath)
-	if err != nil {
-		return false, fmt.Errorf("stat manifest link path %s error: %w", manifestLinkPath, err)
-	}
-	digest := string(digestContent)
-	stat, err := c.StatBlob(ctx, digest)
-	if err != nil {
-		return false, err
-	}
-
-	return stat.Size() != 0, nil
-}
-
-func (c *Cache) StatOrRelinkManifest(ctx context.Context, host, image, tag string, blob string) (bool, error) {
-	manifestLinkPath := registry.ManifestTagCachePath(host, image, tag)
-
-	digestContent, err := c.GetContent(ctx, manifestLinkPath)
-	if err != nil {
-		return false, fmt.Errorf("stat or relink manifest link path %s error: %w", manifestLinkPath, err)
-	}
-	digest := string(digestContent)
-	stat, err := c.StatBlob(ctx, digest)
-	if err != nil {
-		return false, err
-	}
-
-	if stat.Size() == 0 {
-		return false, nil
-	}
-
-	blob = registry.EnsureDigestPrefix(blob)
-	if digest == blob {
-		return true, nil
-	}
-
-	err = c.PutContent(ctx, manifestLinkPath, []byte(blob))
-	if err != nil {
-		return false, fmt.Errorf("put manifest link path %s error: %w", manifestLinkPath, err)
-	}
-
-	manifestBlobLinkPath := registry.ManifestRevisionsCachePath(host, image, blob)
-	err = c.PutContent(ctx, manifestBlobLinkPath, []byte(blob))
-	if err != nil {
-		return false, fmt.Errorf("put manifest revisions path %s error: %w", manifestLinkPath, err)
-	}
-	return true, nil
 }
 
 func (c *Cache) WalkTags(ctx context.Context, host, image string, tagCb func(tag string) bool) error {

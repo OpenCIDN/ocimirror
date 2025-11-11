@@ -42,10 +42,12 @@ func main() {
 }
 
 type flagpole struct {
-	StorageURL    string
-	RedirectLinks string
-	LinkExpires   time.Duration
-	SignLink      bool
+	StorageURL            string
+	ManifestCacheDuration time.Duration
+	BlobCacheDuration     time.Duration
+	RedirectLinks         string
+	LinkExpires           time.Duration
+	SignLink              bool
 
 	Userpass        []string
 	Retry           int
@@ -92,6 +94,9 @@ func NewCommand() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&flags.StorageURL, "storage-url", flags.StorageURL, "Storage driver url")
+	cmd.Flags().DurationVar(&flags.ManifestCacheDuration, "manifest-cache-duration", flags.ManifestCacheDuration, "Manifest cache duration")
+	cmd.Flags().DurationVar(&flags.BlobCacheDuration, "blob-cache-duration", flags.BlobCacheDuration, "Blob cache duration")
+
 	cmd.Flags().StringVar(&flags.RedirectLinks, "redirect-links", flags.RedirectLinks, "Redirect links")
 	cmd.Flags().DurationVar(&flags.LinkExpires, "link-expires", flags.LinkExpires, "Link expires")
 	cmd.Flags().BoolVar(&flags.SignLink, "sign-link", flags.SignLink, "Sign Link")
@@ -230,6 +235,14 @@ func runE(ctx context.Context, flags *flagpole) error {
 
 		cacheOpts := []cache.Option{
 			cache.WithSignLink(flags.SignLink),
+		}
+
+		if flags.ManifestCacheDuration > 0 {
+			cacheOpts = append(cacheOpts, cache.WithManifestCache(flags.ManifestCacheDuration))
+		}
+
+		if flags.BlobCacheDuration > 0 {
+			cacheOpts = append(cacheOpts, cache.WithBlobCache(flags.BlobCacheDuration))
 		}
 
 		sd, err := sss.NewSSS(sss.WithURL(flags.StorageURL))

@@ -11,9 +11,11 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/OpenCIDN/cidn/pkg/clientset/versioned"
 	informers "github.com/OpenCIDN/cidn/pkg/informers/externalversions/task/v1alpha1"
+	"github.com/OpenCIDN/ocimirror/internal/maps"
 	"github.com/OpenCIDN/ocimirror/internal/registry"
 	"github.com/OpenCIDN/ocimirror/internal/utils"
 	"github.com/OpenCIDN/ocimirror/pkg/cache"
@@ -28,7 +30,8 @@ type Manifests struct {
 	logger     *slog.Logger
 	cache      *cache.Cache
 
-	cidn cidn.CIDN
+	cidn  cidn.CIDN
+	async maps.SyncMap[PathInfo, struct{}]
 }
 
 type Option func(c *Manifests)
@@ -70,11 +73,49 @@ func NewManifests(opts ...Option) (*Manifests, error) {
 		opt(c)
 	}
 
+	if c.cache == nil {
+		return nil, errors.New("cache is required")
+	}
+
+	go c.runAsyncWorker()
+
 	return c, nil
+}
+
+func (c *Manifests) runAsyncWorker() {
+	for {
+		list := []PathInfo{}
+		c.async.Range(func(key PathInfo, value struct{}) bool {
+			list = append(list, key)
+			return true
+		})
+		if c.cidn.Client != nil {
+			for _, info := range list {
+				_, err := c.cacheManifestWithCIDN(&info)
+				if err != nil {
+					c.logger.Warn("failed to async sync manifest with cidn", "info", info, "error", err)
+				}
+				c.async.Delete(info)
+			}
+		} else {
+			for _, info := range list {
+				_, err := c.cacheManifest(&info)
+				if err != nil {
+					c.logger.Warn("failed to async sync manifest", "info", info, "error", err)
+				}
+				c.async.Delete(info)
+			}
+		}
+
+		time.Sleep(time.Second)
+	}
 }
 
 func (c *Manifests) Serve(rw http.ResponseWriter, r *http.Request, info *PathInfo, t *token.Token) {
 	if c.serveCache(rw, r, info) {
+		if !info.IsDigestManifests {
+			c.async.Store(*info, struct{}{})
+		}
 		return
 	}
 
@@ -86,7 +127,7 @@ func (c *Manifests) Serve(rw http.ResponseWriter, r *http.Request, info *PathInf
 			if err != nil {
 				errStr := err.Error()
 				if strings.Contains(errStr, "status code: got 404") {
-					utils.ServeError(rw, r, errcode.ErrorCodeDenied, http.StatusNotFound)
+					utils.ServeError(rw, r, errcode.ErrorCodeDenied, sc)
 					return
 				}
 				c.logger.Warn("failed to cache manifest with cidn", "info", info, "error", err)
@@ -98,24 +139,24 @@ func (c *Manifests) Serve(rw http.ResponseWriter, r *http.Request, info *PathInf
 			if err != nil {
 				errStr := err.Error()
 				if strings.Contains(errStr, "status code: got 404") {
-					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
+					utils.ServeError(rw, r, errcode.ErrorCodeDenied, sc)
 					return
 				} else if strings.Contains(errStr, "status code: got 403") {
-					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
+					utils.ServeError(rw, r, errcode.ErrorCodeDenied, sc)
 					return
 				} else if strings.Contains(errStr, "status code: got 401") {
-					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
+					utils.ServeError(rw, r, errcode.ErrorCodeDenied, sc)
 					return
 				} else if strings.Contains(errStr, "status code: got 412") {
 					// For gcr.io
 					// unexpected status code 412 Precondition Failed: Container Registry is deprecated and shutting down, please use the auto migration tool to migrate to Artifact Registry (gcloud artifacts docker upgrade migrate --projects='arrikto'). For more details see: https://cloud.google.com/artifact-registry/docs/transition/auto-migrate-gcr-ar"
-					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
+					utils.ServeError(rw, r, errcode.ErrorCodeDenied, sc)
 					return
 				} else if strings.Contains(errStr, "unsupported target response") {
-					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
+					utils.ServeError(rw, r, errcode.ErrorCodeDenied, sc)
 					return
 				} else if strings.Contains(errStr, "DENIED") {
-					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
+					utils.ServeError(rw, r, errcode.ErrorCodeDenied, sc)
 					return
 				}
 
@@ -243,7 +284,7 @@ func (c *Manifests) cacheManifest(info *PathInfo) (int, error) {
 		return resp.StatusCode, retErrs
 	}
 
-	_, _, _, err = c.cache.PutManifestContent(ctx, info.Host, info.Image, info.Manifests, body)
+	err = c.cache.PutManifestContent(ctx, info.Host, info.Image, info.Manifests, body)
 	if err != nil {
 		return 0, err
 	}
@@ -268,6 +309,10 @@ func (c *Manifests) cacheManifestWithCIDN(info *PathInfo) (int, error) {
 		if digest == "" {
 			return 0, errcode.ErrorCodeDenied
 		}
+
+		if resp.StatusCode != http.StatusOK {
+			return resp.StatusCode, fmt.Errorf("unexpected status code: got %d", resp.StatusCode)
+		}
 		tag = info.Manifests
 	} else {
 		digest = info.Manifests
@@ -290,7 +335,7 @@ func (c *Manifests) cacheManifestWithCIDN(info *PathInfo) (int, error) {
 		return 0, nil
 	}
 
-	return 0, fmt.Errorf("failed to relink manifest after caching blob with CIDN")
+	return 0, fmt.Errorf("failed to relink manifest after caching blob: %w", err)
 }
 
 func (c *Manifests) cacheManifestWithCIDNForOllama(info *PathInfo) (int, error) {
@@ -309,6 +354,11 @@ func (c *Manifests) cacheManifestWithCIDNForOllama(info *PathInfo) (int, error) 
 	if digest == "" {
 		return 0, errcode.ErrorCodeDenied
 	}
+
+	if resp.StatusCode != http.StatusOK {
+		return resp.StatusCode, fmt.Errorf("unexpected status code: got %d", resp.StatusCode)
+	}
+
 	digest = registry.EnsureDigestPrefix(digest)
 	tag := info.Manifests
 
@@ -329,25 +379,25 @@ func (c *Manifests) cacheManifestWithCIDNForOllama(info *PathInfo) (int, error) 
 		return 0, nil
 	}
 
-	return 0, fmt.Errorf("failed to relink manifest after caching blob with CIDN")
+	return 0, fmt.Errorf("failed to relink manifest after caching blob: %w", err)
 }
 
 func (c *Manifests) serveCache(rw http.ResponseWriter, r *http.Request, info *PathInfo) bool {
-	content, digest, mediaType, err := c.cache.GetManifestContent(r.Context(), info.Host, info.Image, info.Manifests)
+	manifest, err := c.cache.GetManifestContent(r.Context(), info.Host, info.Image, info.Manifests)
 	if err != nil {
 		c.logger.Warn("manifest missed", "host", info.Host, "image", info.Image, "manifest", info.Manifests, "error", err)
 		return false
 	}
-	c.logger.Info("manifest hit", "host", info.Host, "image", info.Image, "manifest", info.Manifests, "digest", digest)
+	c.logger.Info("manifest hit", "host", info.Host, "image", info.Image, "manifest", info.Manifests, "digest", manifest.Digest)
 
-	length := strconv.FormatInt(int64(len(content)), 10)
+	length := strconv.FormatInt(int64(len(manifest.Content)), 10)
 
-	rw.Header().Set("Docker-Content-Digest", digest)
-	rw.Header().Set("Content-Type", mediaType)
+	rw.Header().Set("Docker-Content-Digest", manifest.Digest)
+	rw.Header().Set("Content-Type", manifest.MediaType)
 	rw.Header().Set("Content-Length", length)
 
 	if r.Method != http.MethodHead {
-		rw.Write(content)
+		rw.Write(manifest.Content)
 	}
 	return true
 }
