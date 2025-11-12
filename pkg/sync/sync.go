@@ -15,6 +15,8 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+const priority = 10
+
 // SyncImage synchronizes a single OCI image using CIDN
 func SyncImage(ctx context.Context, g *errgroup.Group, cidnClient *cidn.CIDN, cache *cache.Cache, imageRef string, platformFilters []*spec.Platform) error {
 	// Parse the image reference
@@ -27,7 +29,7 @@ func SyncImage(ctx context.Context, g *errgroup.Group, cidnClient *cidn.CIDN, ca
 
 	if isDigest {
 		// Sync the platform-specific manifest
-		if err := cidnClient.ManifestDigest(ctx, host, image, reference, reference); err != nil {
+		if err := cidnClient.ManifestDigest(ctx, host, image, reference, reference, priority); err != nil {
 			return fmt.Errorf("failed to sync manifest digest: %w", err)
 		}
 
@@ -45,7 +47,7 @@ func SyncImage(ctx context.Context, g *errgroup.Group, cidnClient *cidn.CIDN, ca
 		tag := reference
 
 		// Step 1: Get the manifest tag to resolve to a digest
-		resp, err := cidnClient.ManifestTag(ctx, host, image, tag)
+		resp, err := cidnClient.ManifestTag(ctx, host, image, tag, priority)
 		if err != nil {
 			return fmt.Errorf("failed to get manifest tag: %w", err)
 		}
@@ -60,7 +62,7 @@ func SyncImage(ctx context.Context, g *errgroup.Group, cidnClient *cidn.CIDN, ca
 			return fmt.Errorf("no digest found in manifest tag response")
 		}
 
-		err = cidnClient.ManifestDigest(ctx, host, image, digest, digest)
+		err = cidnClient.ManifestDigest(ctx, host, image, digest, digest, priority)
 		if err != nil {
 			return fmt.Errorf("failed to sync manifest digest: %w", err)
 		}
@@ -87,7 +89,7 @@ func SyncImage(ctx context.Context, g *errgroup.Group, cidnClient *cidn.CIDN, ca
 // syncManifestAndBlobs syncs a manifest and optionally its platform-specific blobs
 func syncManifestAndBlobs(ctx context.Context, g *errgroup.Group, cidnClient *cidn.CIDN, cache *cache.Cache, manifestContent []byte, host, image, digest string, platformFilters []*spec.Platform) error {
 	// Sync the manifest
-	err := cidnClient.ManifestDigest(ctx, host, image, digest, digest)
+	err := cidnClient.ManifestDigest(ctx, host, image, digest, digest, priority)
 	if err != nil {
 		return err
 	}
@@ -112,7 +114,7 @@ func syncManifestAndBlobs(ctx context.Context, g *errgroup.Group, cidnClient *ci
 			m := m // capture range variable
 			g.Go(func() error {
 				// Sync the platform-specific manifest
-				if err := cidnClient.ManifestDigest(ctx, host, image, m.Digest, m.Digest); err != nil {
+				if err := cidnClient.ManifestDigest(ctx, host, image, m.Digest, m.Digest, priority); err != nil {
 					return fmt.Errorf("failed to sync platform manifest %s for %s/%s: %w", m.Digest, host, image, err)
 				}
 				// Get the manifest content from cache
@@ -156,7 +158,7 @@ func syncManifestBlobs(ctx context.Context, g *errgroup.Group, cidnClient *cidn.
 	if manifest.Config.Digest != "" {
 		digest := manifest.Config.Digest // capture variable
 		g.Go(func() error {
-			err := cidnClient.Blob(ctx, host, image, digest, false)
+			err := cidnClient.Blob(ctx, host, image, digest, false, priority)
 			if err != nil {
 				return fmt.Errorf("failed to sync config blob %s: %w", digest, err)
 			}
@@ -169,7 +171,7 @@ func syncManifestBlobs(ctx context.Context, g *errgroup.Group, cidnClient *cidn.
 		index := i
 		digest := layer.Digest
 		g.Go(func() error {
-			err := cidnClient.Blob(ctx, host, image, digest, false)
+			err := cidnClient.Blob(ctx, host, image, digest, false, priority)
 			if err != nil {
 				return fmt.Errorf("failed to sync layer blob %s (index %d): %w", digest, index, err)
 			}

@@ -83,6 +83,7 @@ func NewManifests(opts ...Option) (*Manifests, error) {
 }
 
 func (c *Manifests) runAsyncWorker() {
+	t := token.Token{}
 	for {
 		time.Sleep(10 * time.Second)
 		list := []PathInfo{}
@@ -92,7 +93,7 @@ func (c *Manifests) runAsyncWorker() {
 		})
 		if c.cidn.Client != nil {
 			for _, info := range list {
-				_, err := c.cacheManifestWithCIDN(&info)
+				_, err := c.cacheManifestWithCIDN(&info, &t)
 				if err != nil {
 					c.logger.Warn("failed to async sync manifest with cidn", "info", info, "error", err)
 				}
@@ -124,7 +125,7 @@ func (c *Manifests) Serve(rw http.ResponseWriter, r *http.Request, info *PathInf
 	if c.cidn.Client != nil {
 		// Synchronously cache the manifest
 		if info.Host == "ollama.com" {
-			sc, err := c.cacheManifestWithCIDNForOllama(info)
+			sc, err := c.cacheManifestWithCIDNForOllama(info, t)
 			if err != nil {
 				errStr := err.Error()
 				if strings.Contains(errStr, "status code: got 404") {
@@ -136,7 +137,7 @@ func (c *Manifests) Serve(rw http.ResponseWriter, r *http.Request, info *PathInf
 				return
 			}
 		} else {
-			sc, err := c.cacheManifestWithCIDN(info)
+			sc, err := c.cacheManifestWithCIDN(info, t)
 			if err != nil {
 				errStr := err.Error()
 				if strings.Contains(errStr, "status code: got 404") {
@@ -293,7 +294,7 @@ func (c *Manifests) cacheManifest(info *PathInfo) (int, error) {
 	return 0, nil
 }
 
-func (c *Manifests) cacheManifestWithCIDN(info *PathInfo) (int, error) {
+func (c *Manifests) cacheManifestWithCIDN(info *PathInfo, t *token.Token) (int, error) {
 	ctx := context.Background()
 
 	var (
@@ -301,7 +302,7 @@ func (c *Manifests) cacheManifestWithCIDN(info *PathInfo) (int, error) {
 		digest string
 	)
 	if !info.IsDigestManifests {
-		resp, err := c.cidn.ManifestTag(ctx, info.Host, info.Image, info.Manifests)
+		resp, err := c.cidn.ManifestTag(ctx, info.Host, info.Image, info.Manifests, int64(t.Weight))
 		if err != nil {
 			return 0, fmt.Errorf("request with cidn error: %w", err)
 		}
@@ -325,7 +326,7 @@ func (c *Manifests) cacheManifestWithCIDN(info *PathInfo) (int, error) {
 		return 0, nil
 	}
 
-	err = c.cidn.ManifestDigest(ctx, info.Host, info.Image, digest, digest)
+	err = c.cidn.ManifestDigest(ctx, info.Host, info.Image, digest, digest, int64(t.Weight))
 	if err != nil {
 		return 0, fmt.Errorf("cache blob with cidn error: %w", err)
 	}
@@ -339,14 +340,14 @@ func (c *Manifests) cacheManifestWithCIDN(info *PathInfo) (int, error) {
 	return 0, fmt.Errorf("failed to relink manifest after caching blob: %w", err)
 }
 
-func (c *Manifests) cacheManifestWithCIDNForOllama(info *PathInfo) (int, error) {
+func (c *Manifests) cacheManifestWithCIDNForOllama(info *PathInfo, t *token.Token) (int, error) {
 	ctx := context.Background()
 
 	if info.IsDigestManifests {
 		return 0, fmt.Errorf("ollama.com does not support digest-based manifest retrieval")
 	}
 
-	resp, err := c.cidn.ManifestTag(ctx, info.Host, info.Image, info.Manifests)
+	resp, err := c.cidn.ManifestTag(ctx, info.Host, info.Image, info.Manifests, int64(t.Weight))
 	if err != nil {
 		return 0, fmt.Errorf("request with cidn error: %w", err)
 	}
@@ -369,7 +370,7 @@ func (c *Manifests) cacheManifestWithCIDNForOllama(info *PathInfo) (int, error) 
 		return 0, nil
 	}
 
-	err = c.cidn.ManifestDigest(ctx, info.Host, info.Image, digest, tag)
+	err = c.cidn.ManifestDigest(ctx, info.Host, info.Image, digest, tag, int64(t.Weight))
 	if err != nil {
 		return 0, fmt.Errorf("cache blob with cidn error: %w", err)
 	}

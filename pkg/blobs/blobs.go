@@ -205,7 +205,7 @@ func (b *Blobs) Serve(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t
 
 	if b.cidn.Client != nil {
 		if info.Host == "ollama.com" {
-			err := b.cidn.Blob(r.Context(), info.Host, info.Image, info.Blobs, true)
+			err := b.cidn.Blob(r.Context(), info.Host, info.Image, info.Blobs, true, int64(t.Weight))
 			if err != nil {
 				errStr := err.Error()
 				if strings.Contains(errStr, "status code: got 404") {
@@ -217,7 +217,7 @@ func (b *Blobs) Serve(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t
 			}
 
 		} else {
-			err := b.cidn.Blob(r.Context(), info.Host, info.Image, info.Blobs, false)
+			err := b.cidn.Blob(r.Context(), info.Host, info.Image, info.Blobs, false, int64(t.Weight))
 			if err != nil {
 				errStr := err.Error()
 				if strings.Contains(errStr, "status code: got 404") {

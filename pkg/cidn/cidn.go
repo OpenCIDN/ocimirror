@@ -29,7 +29,7 @@ type Response struct {
 	Headers    map[string]string
 }
 
-func (c *CIDN) Blob(ctx context.Context, host, image, digest string, forceAcceptRanges bool) error {
+func (c *CIDN) Blob(ctx context.Context, host, image, digest string, forceAcceptRanges bool, priority int64) error {
 	sourceURL := fmt.Sprintf("https://%s/v2/%s/blobs/%s", host, image, digest)
 	cachePath := registry.BlobCachePath(digest)
 
@@ -56,9 +56,13 @@ func (c *CIDN) Blob(ctx context.Context, host, image, digest string, forceAccept
 
 	if create {
 		displayName := fmt.Sprintf("%s/%s@%s", formatHost(host), image, digest)
+		tags := []string{"blob"}
+		if priority > 0 {
+			tags = append(tags, fmt.Sprintf("P%d", priority))
+		}
 		annotations := map[string]string{
 			v1alpha1.WebuiDisplayNameAnnotation: displayName,
-			v1alpha1.WebuiTagAnnotation:         "blob",
+			v1alpha1.WebuiTagAnnotation:         strings.Join(tags, ","),
 			v1alpha1.ReleaseTTLAnnotation:       "1h",
 			v1alpha1.WebuiGroupAnnotation:       fmt.Sprintf("%s/%s", formatHost(host), image),
 		}
@@ -73,6 +77,7 @@ func (c *CIDN) Blob(ctx context.Context, host, image, digest string, forceAccept
 				MaximumRunning:   3,
 				MaximumPending:   1,
 				MinimumChunkSize: 128 * 1024 * 1024,
+				Priority:         priority,
 				Source: []v1alpha1.BlobSource{
 					{
 						URL:        sourceURL,
@@ -110,7 +115,7 @@ func (c *CIDN) Blob(ctx context.Context, host, image, digest string, forceAccept
 	}
 }
 
-func (c *CIDN) ManifestTag(ctx context.Context, host, image, tag string) (*Response, error) {
+func (c *CIDN) ManifestTag(ctx context.Context, host, image, tag string, priority int64) (*Response, error) {
 	u := &url.URL{
 		Scheme: "https",
 		Host:   host,
@@ -137,10 +142,13 @@ func (c *CIDN) ManifestTag(ctx context.Context, host, image, tag string) (*Respo
 		return nil, fmt.Errorf("get chunk from informer error: %w", err)
 	} else {
 		displayName := fmt.Sprintf("%s/%s:%s", formatHost(host), image, tag)
-
+		tags := []string{"manifest"}
+		if priority > 0 {
+			tags = append(tags, fmt.Sprintf("P%d", priority))
+		}
 		annotations := map[string]string{
 			v1alpha1.WebuiDisplayNameAnnotation: displayName,
-			v1alpha1.WebuiTagAnnotation:         "manifest",
+			v1alpha1.WebuiTagAnnotation:         strings.Join(tags, ","),
 			v1alpha1.ReleaseTTLAnnotation:       "1h",
 			v1alpha1.WebuiGroupAnnotation:       fmt.Sprintf("%s/%s", formatHost(host), image),
 		}
@@ -151,6 +159,7 @@ func (c *CIDN) ManifestTag(ctx context.Context, host, image, tag string) (*Respo
 				Annotations: annotations,
 			},
 			Spec: v1alpha1.ChunkSpec{
+				Priority:     priority,
 				MaximumRetry: 2,
 				Source: v1alpha1.ChunkHTTP{
 					Request: v1alpha1.ChunkHTTPRequest{
@@ -189,7 +198,7 @@ func (c *CIDN) ManifestTag(ctx context.Context, host, image, tag string) (*Respo
 	}
 }
 
-func (c *CIDN) ManifestDigest(ctx context.Context, host, image, digest, manifest string) error {
+func (c *CIDN) ManifestDigest(ctx context.Context, host, image, digest, manifest string, priority int64) error {
 	sourceURL := fmt.Sprintf("https://%s/v2/%s/manifests/%s", host, image, manifest)
 	cachePath := registry.BlobCachePath(digest)
 
@@ -216,9 +225,13 @@ func (c *CIDN) ManifestDigest(ctx context.Context, host, image, digest, manifest
 
 	if create {
 		displayName := fmt.Sprintf("%s/%s@%s", formatHost(host), image, digest)
+		tags := []string{"manifest"}
+		if priority > 0 {
+			tags = append(tags, fmt.Sprintf("P%d", priority))
+		}
 		annotations := map[string]string{
 			v1alpha1.WebuiDisplayNameAnnotation: displayName,
-			v1alpha1.WebuiTagAnnotation:         "manifest",
+			v1alpha1.WebuiTagAnnotation:         strings.Join(tags, ","),
 			v1alpha1.ReleaseTTLAnnotation:       "1h",
 			v1alpha1.WebuiGroupAnnotation:       fmt.Sprintf("%s/%s", formatHost(host), image),
 		}
@@ -229,6 +242,7 @@ func (c *CIDN) ManifestDigest(ctx context.Context, host, image, digest, manifest
 				Annotations: annotations,
 			},
 			Spec: v1alpha1.BlobSpec{
+				Priority:       priority,
 				MaximumRetry:   2,
 				MaximumRunning: 1,
 				MaximumPending: 1,
