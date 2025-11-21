@@ -18,7 +18,7 @@ import (
 func (c *Cache) RelinkManifest(ctx context.Context, host, image, tag string, blob string) error {
 	blob = registry.EnsureDigestPrefix(blob)
 
-	c.CleanCacheStatBlobIfError(blob)
+	c.CleanCacheStatBlob(blob)
 	_, err := c.StatBlob(ctx, blob)
 	if err != nil {
 		return err
@@ -36,7 +36,7 @@ func (c *Cache) RelinkManifest(ctx context.Context, host, image, tag string, blo
 		}
 	}
 
-	c.CleanCacheStatManifestIfError(blob)
+	c.CleanCacheStatManifest(blob)
 	manifestBlobLinkPath := registry.ManifestRevisionsCachePath(host, image, blob)
 	err = c.PutContent(ctx, manifestBlobLinkPath, []byte(blob))
 	if err != nil {
@@ -81,15 +81,15 @@ func (c *Cache) PutManifestContent(ctx context.Context, host, image, tagOrBlob s
 
 	if c.manifestCache != nil {
 		if isHash {
-			c.CleanCacheStatManifestIfError(hash)
+			c.CleanCacheStatManifest(hash)
 		} else {
 			cacheKey := host + "/" + image + ":" + tagOrBlob
 			c.CleanCacheStatManifestTag(cacheKey)
-			c.CleanCacheStatManifestIfError(hash)
+			c.CleanCacheStatManifest(hash)
 		}
 	}
 
-	c.CleanCacheStatBlobIfError(hash)
+	c.CleanCacheStatBlob(hash)
 	return nil
 }
 

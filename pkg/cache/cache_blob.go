@@ -13,24 +13,20 @@ func (c *Cache) RedirectBlob(ctx context.Context, blob string, referer string) (
 	return c.Redirect(ctx, registry.BlobCachePath(blob), referer)
 }
 
-func (c *Cache) CleanCacheStatBlobIfError(blob string) {
+func (c *Cache) CleanCacheStatBlob(blob string) {
 	if c.blobCache == nil {
 		return
 	}
-	info, ok := c.blobCache.Get(blob)
-	if ok && info.Error != nil {
-		c.blobCache.Remove(blob)
-	}
+
+	c.blobCache.Remove(blob)
 }
 
-func (c *Cache) CleanCacheStatManifestIfError(manifest string) {
+func (c *Cache) CleanCacheStatManifest(manifest string) {
 	if c.manifestCache == nil {
 		return
 	}
-	info, ok := c.manifestCache.Get(manifest)
-	if ok && info.Error != nil {
-		c.manifestCache.Remove(manifest)
-	}
+
+	c.manifestCache.Remove(manifest)
 }
 
 func (c *Cache) CleanCacheStatManifestTag(manifest string) {
@@ -68,13 +64,13 @@ func (c *Cache) StatBlob(ctx context.Context, blob string) (sss.FileInfo, error)
 
 func (c *Cache) PutBlob(ctx context.Context, blob string, r io.Reader) (int64, error) {
 	cachePath := registry.BlobCachePath(blob)
-	defer c.CleanCacheStatBlobIfError(blob)
+	defer c.CleanCacheStatBlob(blob)
 	return c.PutWithHash(ctx, cachePath, r, registry.CleanDigest(blob), 0)
 }
 
 func (c *Cache) PutBlobContent(ctx context.Context, blob string, content []byte) (int64, error) {
 	cachePath := registry.BlobCachePath(blob)
-	defer c.CleanCacheStatBlobIfError(blob)
+	defer c.CleanCacheStatBlob(blob)
 	return c.PutWithHash(ctx, cachePath, bytes.NewBuffer(content), registry.CleanDigest(blob), int64(len(content)))
 }
 

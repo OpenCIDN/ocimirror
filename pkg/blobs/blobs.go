@@ -236,7 +236,7 @@ func (b *Blobs) Serve(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t
 			}
 		}
 
-		b.cache.CleanCacheStatBlobIfError(info.Blobs)
+		b.cache.CleanCacheStatBlob(info.Blobs)
 	} else {
 		sc, err := b.cacheBlob(info)
 		if err != nil {
