@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -28,6 +29,8 @@ func SyncImage(ctx context.Context, g *errgroup.Group, cidnClient *cidn.CIDN, ca
 	host, image = utils.CorrectImage(host, image)
 
 	if isDigest {
+		slog.Info("Processing", "image", imageRef)
+
 		// Sync the platform-specific manifest
 		if err := cidnClient.ManifestDigest(ctx, host, image, reference, reference, priority); err != nil {
 			return fmt.Errorf("failed to sync manifest digest: %w", err)
@@ -43,6 +46,8 @@ func SyncImage(ctx context.Context, g *errgroup.Group, cidnClient *cidn.CIDN, ca
 			return fmt.Errorf("failed to sync manifest digest: %w", err)
 		}
 	} else {
+		slog.Info("Processing", "image", imageRef, "platforms", formatPlatforms(platformFilters))
+
 		// Tag reference - resolve to digest first
 		tag := reference
 
@@ -62,6 +67,7 @@ func SyncImage(ctx context.Context, g *errgroup.Group, cidnClient *cidn.CIDN, ca
 			return fmt.Errorf("no digest found in manifest tag response")
 		}
 
+		slog.Info("Processing", "digest", digest)
 		err = cidnClient.ManifestDigest(ctx, host, image, digest, digest, priority)
 		if err != nil {
 			return fmt.Errorf("failed to sync manifest digest: %w", err)
@@ -101,52 +107,71 @@ func syncManifestAndBlobs(ctx context.Context, g *errgroup.Group, cidnClient *ci
 		return fmt.Errorf("failed to parse manifest content: %w", err)
 	}
 
-	if len(indexManifest.Manifests) > 0 {
-		// This is a manifest list - find platform-specific manifests
-
-		matched := false
-		for _, m := range indexManifest.Manifests {
-			if len(platformFilters) > 0 && !matchesPlatforms(m.Platform, platformFilters) {
-				continue
-			}
-
-			matched = true
-			m := m // capture range variable
-			g.Go(func() error {
-				// Sync the platform-specific manifest
-				if err := cidnClient.ManifestDigest(ctx, host, image, m.Digest, m.Digest, priority); err != nil {
-					return fmt.Errorf("failed to sync platform manifest %s for %s/%s: %w", m.Digest, host, image, err)
-				}
-				// Get the manifest content from cache
-				manifestContent, err := cache.GetBlobContent(ctx, m.Digest)
-				if err != nil {
-					return fmt.Errorf("failed to get platform manifest content %s from cache: %w", m.Digest, err)
-				}
-				// Get and parse the platform-specific manifest to sync its blobs
-				err = syncManifestBlobs(ctx, g, cidnClient, manifestContent, host, image, m.Digest)
-				if err != nil {
-					return fmt.Errorf("failed to sync blobs for platform manifest %s: %w", m.Digest, err)
-				}
-				return nil
-			})
-		}
-
-		if !matched {
-			return fmt.Errorf("no manifests matched the specified platforms")
-		}
-	} else {
+	if len(indexManifest.Manifests) == 0 {
 		// This is a regular manifest - sync its blobs
 		err := syncManifestBlobs(ctx, g, cidnClient, manifestContent, host, image, digest)
 		if err != nil {
 			return fmt.Errorf("failed to sync blobs for manifest %s: %w", digest, err)
 		}
+		return nil
+	}
+
+	// This is a manifest list - find platform-specific manifests
+	matched := false
+	for _, m := range indexManifest.Manifests {
+		if len(platformFilters) > 0 && !matchesPlatforms(m.Platform, platformFilters) {
+			slog.Info("Skip processing", "digest", m.Digest, "plantform", formatPlatform(m.Platform))
+			continue
+		}
+
+		slog.Info("Processing", "digest", m.Digest, "platform", formatPlatform(m.Platform))
+		matched = true
+		m := m // capture range variable
+		g.Go(func() error {
+			// Sync the platform-specific manifest
+			if err := cidnClient.ManifestDigest(ctx, host, image, m.Digest, m.Digest, priority); err != nil {
+				return fmt.Errorf("failed to sync platform manifest %s for %s/%s: %w", m.Digest, host, image, err)
+			}
+			// Get the manifest content from cache
+			manifestContent, err := cache.GetBlobContent(ctx, m.Digest)
+			if err != nil {
+				return fmt.Errorf("failed to get platform manifest content %s from cache: %w", m.Digest, err)
+			}
+			// Get and parse the platform-specific manifest to sync its blobs
+			err = syncManifestBlobs(ctx, g, cidnClient, manifestContent, host, image, m.Digest)
+			if err != nil {
+				return fmt.Errorf("failed to sync blobs for platform manifest %s: %w", m.Digest, err)
+			}
+			return nil
+		})
+	}
+
+	if !matched {
+		return fmt.Errorf("no manifests matched the specified platforms")
 	}
 
 	return nil
 }
 
+// formatPlatforms formats a list of platforms as a string
+func formatPlatforms(platforms []*spec.Platform) string {
+	var formatted []string
+	for _, platform := range platforms {
+		formatted = append(formatted, formatPlatform(*platform))
+	}
+	return strings.Join(formatted, ", ")
+}
+
+// formatPlatform formats a platform as a string
+func formatPlatform(platform spec.Platform) string {
+	if platform.Variant != "" {
+		return fmt.Sprintf("%s/%s/%s", platform.OS, platform.Architecture, platform.Variant)
+	}
+	return fmt.Sprintf("%s/%s", platform.OS, platform.Architecture)
+}
+
 // syncManifestBlobs parses a manifest and syncs its config and layer blobs
-func syncManifestBlobs(ctx context.Context, g *errgroup.Group, cidnClient *cidn.CIDN, manifestContent []byte, host, image, digest string) error {
+func syncManifestBlobs(ctx context.Context, g *errgroup.Group, cidnClient *cidn.CIDN, manifestContent []byte, host, image, manifestDigest string) error {
 	// Parse the manifest to get blob digests
 	var manifest spec.ManifestLayers
 	err := json.Unmarshal(manifestContent, &manifest)
@@ -157,6 +182,7 @@ func syncManifestBlobs(ctx context.Context, g *errgroup.Group, cidnClient *cidn.
 	// Sync config blob
 	if manifest.Config.Digest != "" {
 		digest := manifest.Config.Digest // capture variable
+		slog.Info("Processing", "digest", digest, "manifest", manifestDigest)
 		g.Go(func() error {
 			err := cidnClient.Blob(ctx, host, image, digest, false, priority)
 			if err != nil {
@@ -170,6 +196,7 @@ func syncManifestBlobs(ctx context.Context, g *errgroup.Group, cidnClient *cidn.
 	for i, layer := range manifest.Layers {
 		index := i
 		digest := layer.Digest
+		slog.Info("Processing", "digest", digest, "manifest", manifestDigest)
 		g.Go(func() error {
 			err := cidnClient.Blob(ctx, host, image, digest, false, priority)
 			if err != nil {

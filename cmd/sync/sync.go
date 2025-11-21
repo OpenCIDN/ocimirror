@@ -19,6 +19,7 @@ import (
 	"github.com/wzshiming/sss"
 	"golang.org/x/sync/errgroup"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/util/flowcontrol"
 )
 
 func main() {
@@ -45,7 +46,7 @@ func NewCommand() *cobra.Command {
 		Platforms: []string{
 			"linux/amd64",
 		},
-		Concurrency: 5,
+		Concurrency: 10,
 	}
 
 	cmd := &cobra.Command{
@@ -77,8 +78,6 @@ func runE(ctx context.Context, flags *flagpole) error {
 	if len(flags.Images) == 0 {
 		return fmt.Errorf("at least one image reference is required")
 	}
-
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 
 	// Parse platforms if specified
 	var platformFilters []*spec.Platform
@@ -124,6 +123,7 @@ func runE(ctx context.Context, flags *flagpole) error {
 		return fmt.Errorf("error getting config: %w", err)
 	}
 	config.TLSClientConfig.Insecure = flags.InsecureSkipTLSVerify
+	config.RateLimiter = flowcontrol.NewFakeAlwaysRateLimiter()
 
 	clientset, err := versioned.NewForConfig(config)
 	if err != nil {
@@ -150,7 +150,6 @@ func runE(ctx context.Context, flags *flagpole) error {
 			Destination:   u.Scheme,
 		}
 
-		logger.Info("Processing image", "image", imageRef, "platforms", platformFilters)
 		if err := sync.SyncImage(ctx, g, cidnClient, sdcache, imageRef, platformFilters); err != nil {
 			return fmt.Errorf("failed to sync image %s: %w", imageRef, err)
 		}
