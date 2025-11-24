@@ -13,8 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/OpenCIDN/cidn/pkg/clientset/versioned"
-	informers "github.com/OpenCIDN/cidn/pkg/informers/externalversions/task/v1alpha1"
 	"github.com/OpenCIDN/ocimirror/internal/maps"
 	"github.com/OpenCIDN/ocimirror/internal/registry"
 	"github.com/OpenCIDN/ocimirror/internal/utils"
@@ -30,7 +28,7 @@ type Manifests struct {
 	logger     *slog.Logger
 	cache      *cache.Cache
 
-	cidn  cidn.CIDN
+	cidn  *cidn.CIDN
 	async maps.SyncMap[PathInfo, struct{}]
 }
 
@@ -54,12 +52,9 @@ func WithCache(cache *cache.Cache) Option {
 	}
 }
 
-func WithCIDNClient(cidnClient versioned.Interface, cidnBlobInformer informers.BlobInformer, chunkInformer informers.ChunkInformer, destination string) Option {
+func WithCIDNClient(cidnClient *cidn.CIDN) Option {
 	return func(c *Manifests) {
-		c.cidn.Client = cidnClient
-		c.cidn.ChunkInformer = chunkInformer
-		c.cidn.BlobInformer = cidnBlobInformer
-		c.cidn.Destination = destination
+		c.cidn = cidnClient
 	}
 }
 
@@ -91,7 +86,7 @@ func (c *Manifests) runAsyncWorker() {
 			list = append(list, key)
 			return true
 		})
-		if c.cidn.Client != nil {
+		if c.cidn != nil {
 			for _, info := range list {
 				_, err := c.cacheManifestWithCIDN(&info, &t)
 				if err != nil {
@@ -122,7 +117,7 @@ func (c *Manifests) Serve(rw http.ResponseWriter, r *http.Request, info *PathInf
 	}
 
 	// Use CIDN for manifest syncing if configured
-	if c.cidn.Client != nil {
+	if c.cidn != nil {
 		// Synchronously cache the manifest
 		if info.Host == "ollama.com" {
 			sc, err := c.cacheManifestWithCIDNForOllama(info, t)

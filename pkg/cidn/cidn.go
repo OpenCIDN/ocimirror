@@ -18,10 +18,76 @@ import (
 )
 
 type CIDN struct {
-	Client        versioned.Interface
-	BlobInformer  informers.BlobInformer
-	ChunkInformer informers.ChunkInformer
-	Destination   string
+	client           versioned.Interface
+	blobInformer     informers.BlobInformer
+	chunkInformer    informers.ChunkInformer
+	destination      string
+	maximumRunning   int64
+	minimumChunkSize int64
+}
+
+type option func(*CIDN)
+
+func WithClient(client versioned.Interface) option {
+	return func(c *CIDN) {
+		c.client = client
+	}
+}
+
+func WithBlobInformer(informer informers.BlobInformer) option {
+	return func(c *CIDN) {
+		c.blobInformer = informer
+	}
+}
+
+func WithChunkInformer(informer informers.ChunkInformer) option {
+	return func(c *CIDN) {
+		c.chunkInformer = informer
+	}
+}
+
+func WithDestination(dest string) option {
+	return func(c *CIDN) {
+		c.destination = dest
+	}
+}
+
+func WithMaximumRunning(max int64) option {
+	return func(c *CIDN) {
+		c.maximumRunning = max
+	}
+}
+
+func WithMinimumChunkSize(size int64) option {
+	return func(c *CIDN) {
+		c.minimumChunkSize = size
+	}
+}
+
+func NewCIDN(opts ...option) (*CIDN, error) {
+	c := &CIDN{
+		maximumRunning:   3,
+		minimumChunkSize: 128 * 1024 * 1024,
+	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	if c.client == nil {
+		return nil, fmt.Errorf("client is required")
+	}
+
+	if c.destination == "" {
+		return nil, fmt.Errorf("destination is required")
+	}
+
+	if c.maximumRunning < 1 {
+		return nil, fmt.Errorf("maximumRunning must be at least 1")
+	}
+
+	if c.minimumChunkSize <= 5*1024*1024 {
+		return nil, fmt.Errorf("minimumChunkSize must be greater than 5MB")
+	}
+	return c, nil
 }
 
 type Response struct {
@@ -34,10 +100,10 @@ func (c *CIDN) Blob(ctx context.Context, host, image, digest string, forceAccept
 	cachePath := registry.BlobCachePath(digest)
 
 	blobName := blobName(host, image, digest)
-	blobs := c.Client.TaskV1alpha1().Blobs()
+	blobs := c.client.TaskV1alpha1().Blobs()
 
 	var create bool
-	if blob, err := c.BlobInformer.Lister().Get(blobName); err == nil {
+	if blob, err := c.blobInformer.Lister().Get(blobName); err == nil {
 		switch blob.Status.Phase {
 		case v1alpha1.BlobPhaseSucceeded:
 			err := blobs.Delete(ctx, blobName, metav1.DeleteOptions{})
@@ -55,13 +121,12 @@ func (c *CIDN) Blob(ctx context.Context, host, image, digest string, forceAccept
 	}
 
 	if create {
-		displayName := fmt.Sprintf("%s/%s@%s", formatHost(host), image, digest)
 		tags := []string{"blob"}
 		if priority > 0 {
 			tags = append(tags, fmt.Sprintf("P%d", priority))
 		}
 		annotations := map[string]string{
-			v1alpha1.WebuiDisplayNameAnnotation: displayName,
+			v1alpha1.WebuiDisplayNameAnnotation: digest,
 			v1alpha1.WebuiTagAnnotation:         strings.Join(tags, ","),
 			v1alpha1.ReleaseTTLAnnotation:       "1h",
 			v1alpha1.WebuiGroupAnnotation:       fmt.Sprintf("%s/%s", formatHost(host), image),
@@ -74,9 +139,9 @@ func (c *CIDN) Blob(ctx context.Context, host, image, digest string, forceAccept
 			},
 			Spec: v1alpha1.BlobSpec{
 				MaximumRetry:     3,
-				MaximumRunning:   3,
+				MaximumRunning:   c.maximumRunning,
 				MaximumPending:   1,
-				MinimumChunkSize: 128 * 1024 * 1024,
+				MinimumChunkSize: c.minimumChunkSize,
 				Priority:         priority,
 				Source: []v1alpha1.BlobSource{
 					{
@@ -86,7 +151,7 @@ func (c *CIDN) Blob(ctx context.Context, host, image, digest string, forceAccept
 				},
 				Destination: []v1alpha1.BlobDestination{
 					{
-						Name:         c.Destination,
+						Name:         c.destination,
 						Path:         cachePath,
 						SkipIfExists: true,
 					},
@@ -101,7 +166,7 @@ func (c *CIDN) Blob(ctx context.Context, host, image, digest string, forceAccept
 	}
 
 	// Wait without extra timeout; rely on ctx
-	b, err := waitForBlob(ctx, c.BlobInformer, blobName, 0)
+	b, err := waitForBlob(ctx, c.blobInformer, blobName, 0)
 	if err != nil {
 		return err
 	}
@@ -124,9 +189,9 @@ func (c *CIDN) ManifestTag(ctx context.Context, host, image, tag string, priorit
 	reqURL := u.String()
 
 	chunkName := manifestName(host, image, tag)
-	chunks := c.Client.TaskV1alpha1().Chunks()
+	chunks := c.client.TaskV1alpha1().Chunks()
 
-	if chunk, err := c.ChunkInformer.Lister().Get(chunkName); err == nil {
+	if chunk, err := c.chunkInformer.Lister().Get(chunkName); err == nil {
 		switch chunk.Status.Phase {
 		case v1alpha1.ChunkPhaseSucceeded:
 			return &Response{
@@ -141,13 +206,12 @@ func (c *CIDN) ManifestTag(ctx context.Context, host, image, tag string, priorit
 	} else if !apierrors.IsNotFound(err) {
 		return nil, fmt.Errorf("get chunk from informer error: %w", err)
 	} else {
-		displayName := fmt.Sprintf("%s/%s:%s", formatHost(host), image, tag)
 		tags := []string{"manifest"}
 		if priority > 0 {
 			tags = append(tags, fmt.Sprintf("P%d", priority))
 		}
 		annotations := map[string]string{
-			v1alpha1.WebuiDisplayNameAnnotation: displayName,
+			v1alpha1.WebuiDisplayNameAnnotation: tag,
 			v1alpha1.WebuiTagAnnotation:         strings.Join(tags, ","),
 			v1alpha1.ReleaseTTLAnnotation:       "1h",
 			v1alpha1.WebuiGroupAnnotation:       fmt.Sprintf("%s/%s", formatHost(host), image),
@@ -181,7 +245,7 @@ func (c *CIDN) ManifestTag(ctx context.Context, host, image, tag string, priorit
 		}
 	}
 
-	ch, err := waitForChunkCompletion(ctx, c.ChunkInformer, chunkName, 10*time.Minute)
+	ch, err := waitForChunkCompletion(ctx, c.chunkInformer, chunkName, 10*time.Minute)
 	if err != nil {
 		return nil, err
 	}
@@ -203,10 +267,10 @@ func (c *CIDN) ManifestDigest(ctx context.Context, host, image, digest, manifest
 	cachePath := registry.BlobCachePath(digest)
 
 	blobName := manifestName(host, image, digest)
-	blobs := c.Client.TaskV1alpha1().Blobs()
+	blobs := c.client.TaskV1alpha1().Blobs()
 
 	var create bool
-	if blob, err := c.BlobInformer.Lister().Get(blobName); err == nil {
+	if blob, err := c.blobInformer.Lister().Get(blobName); err == nil {
 		switch blob.Status.Phase {
 		case v1alpha1.BlobPhaseSucceeded:
 			err := blobs.Delete(ctx, blobName, metav1.DeleteOptions{})
@@ -224,13 +288,12 @@ func (c *CIDN) ManifestDigest(ctx context.Context, host, image, digest, manifest
 	}
 
 	if create {
-		displayName := fmt.Sprintf("%s/%s@%s", formatHost(host), image, digest)
 		tags := []string{"manifest"}
 		if priority > 0 {
 			tags = append(tags, fmt.Sprintf("P%d", priority))
 		}
 		annotations := map[string]string{
-			v1alpha1.WebuiDisplayNameAnnotation: displayName,
+			v1alpha1.WebuiDisplayNameAnnotation: digest,
 			v1alpha1.WebuiTagAnnotation:         strings.Join(tags, ","),
 			v1alpha1.ReleaseTTLAnnotation:       "1h",
 			v1alpha1.WebuiGroupAnnotation:       fmt.Sprintf("%s/%s", formatHost(host), image),
@@ -258,7 +321,7 @@ func (c *CIDN) ManifestDigest(ctx context.Context, host, image, digest, manifest
 				},
 				Destination: []v1alpha1.BlobDestination{
 					{
-						Name:         c.Destination,
+						Name:         c.destination,
 						Path:         cachePath,
 						SkipIfExists: true,
 					},
@@ -272,7 +335,7 @@ func (c *CIDN) ManifestDigest(ctx context.Context, host, image, digest, manifest
 	}
 
 	// Wait with a 10m timeout like original
-	b, err := waitForBlob(ctx, c.BlobInformer, blobName, 10*time.Minute)
+	b, err := waitForBlob(ctx, c.blobInformer, blobName, 10*time.Minute)
 	if err != nil {
 		return err
 	}

@@ -13,8 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/OpenCIDN/cidn/pkg/clientset/versioned"
-	informers "github.com/OpenCIDN/cidn/pkg/informers/externalversions/task/v1alpha1"
 	"github.com/OpenCIDN/ocimirror/internal/seeker"
 	"github.com/OpenCIDN/ocimirror/internal/throttled"
 	"github.com/OpenCIDN/ocimirror/internal/utils"
@@ -46,7 +44,7 @@ type Blobs struct {
 
 	noRedirect bool
 
-	cidn cidn.CIDN
+	cidn *cidn.CIDN
 }
 
 type Option func(c *Blobs) error
@@ -86,11 +84,9 @@ func WithNoRedirect(noRedirect bool) Option {
 	}
 }
 
-func WithCIDNClient(cidnClient versioned.Interface, blobInformer informers.BlobInformer, destination string) Option {
+func WithCIDNClient(cidnClient *cidn.CIDN) Option {
 	return func(c *Blobs) error {
-		c.cidn.Client = cidnClient
-		c.cidn.BlobInformer = blobInformer
-		c.cidn.Destination = destination
+		c.cidn = cidnClient
 		return nil
 	}
 }
@@ -203,7 +199,7 @@ func (b *Blobs) Serve(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t
 		return
 	}
 
-	if b.cidn.Client != nil {
+	if b.cidn != nil {
 		if info.Host == "ollama.com" {
 			err := b.cidn.Blob(r.Context(), info.Host, info.Image, info.Blobs, true, int64(t.Weight))
 			if err != nil {

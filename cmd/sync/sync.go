@@ -39,6 +39,8 @@ type flagpole struct {
 	Images                []string
 	Platforms             []string
 	Concurrency           int
+	BlobMaximumRunning    int64
+	BlobMinimumChunkSize  int64
 }
 
 func NewCommand() *cobra.Command {
@@ -46,7 +48,9 @@ func NewCommand() *cobra.Command {
 		Platforms: []string{
 			"linux/amd64",
 		},
-		Concurrency: 10,
+		Concurrency:          10,
+		BlobMaximumRunning:   10,
+		BlobMinimumChunkSize: 128 * 1024 * 1024,
 	}
 
 	cmd := &cobra.Command{
@@ -71,6 +75,9 @@ Examples:
 	cmd.Flags().BoolVar(&flags.InsecureSkipTLSVerify, "insecure-skip-tls-verify", false, "If true, the server's certificate will not be checked for validity. This will make your HTTPS connections insecure")
 	cmd.Flags().StringSliceVar(&flags.Platforms, "platform", flags.Platforms, "Platform in the format os/arch[/variant] (e.g., linux/amd64, linux/arm64, linux/arm/v7). Can be specified multiple times.")
 	cmd.Flags().IntVar(&flags.Concurrency, "concurrency", flags.Concurrency, "Number of concurrent workers for syncing images")
+
+	cmd.Flags().Int64Var(&flags.BlobMaximumRunning, "blob-maximum-running", flags.BlobMaximumRunning, "Maximum number of running blob sync tasks")
+	cmd.Flags().Int64Var(&flags.BlobMinimumChunkSize, "blob-minimum-chunk-size", flags.BlobMinimumChunkSize, "Minimum chunk size for blob sync tasks")
 	return cmd
 }
 
@@ -143,11 +150,17 @@ func runE(ctx context.Context, flags *flagpole) error {
 	// Process each image
 	for _, imageRef := range flags.Images {
 		// Create CIDN client
-		cidnClient := &cidn.CIDN{
-			Client:        clientset,
-			BlobInformer:  blobInformer,
-			ChunkInformer: chunkInformer,
-			Destination:   u.Scheme,
+
+		cidnClient, err := cidn.NewCIDN(
+			cidn.WithClient(clientset),
+			cidn.WithBlobInformer(blobInformer),
+			cidn.WithChunkInformer(chunkInformer),
+			cidn.WithDestination(u.Scheme),
+			cidn.WithMaximumRunning(flags.BlobMaximumRunning),
+			cidn.WithMinimumChunkSize(flags.BlobMinimumChunkSize),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create CIDN client: %w", err)
 		}
 
 		if err := sync.SyncImage(ctx, g, cidnClient, sdcache, imageRef, platformFilters); err != nil {

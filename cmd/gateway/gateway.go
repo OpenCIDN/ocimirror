@@ -20,6 +20,7 @@ import (
 	"github.com/OpenCIDN/ocimirror/internal/utils"
 	"github.com/OpenCIDN/ocimirror/pkg/blobs"
 	"github.com/OpenCIDN/ocimirror/pkg/cache"
+	"github.com/OpenCIDN/ocimirror/pkg/cidn"
 	"github.com/OpenCIDN/ocimirror/pkg/gateway"
 	"github.com/OpenCIDN/ocimirror/pkg/manifests"
 	"github.com/OpenCIDN/ocimirror/pkg/signing"
@@ -77,13 +78,18 @@ type flagpole struct {
 	Kubeconfig            string
 	Master                string
 	InsecureSkipTLSVerify bool
+
+	BlobMaximumRunning   int64
+	BlobMinimumChunkSize int64
 }
 
 func NewCommand() *cobra.Command {
 	flags := &flagpole{
-		Address:     ":18001",
-		SignLink:    true,
-		LinkExpires: 24 * time.Hour,
+		Address:              ":18001",
+		SignLink:             true,
+		LinkExpires:          24 * time.Hour,
+		BlobMaximumRunning:   3,
+		BlobMinimumChunkSize: 128 * 1024 * 1024,
 	}
 
 	cmd := &cobra.Command{
@@ -129,6 +135,8 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&flags.Master, "master", flags.Master, "The address of the Kubernetes API server")
 	cmd.Flags().BoolVar(&flags.InsecureSkipTLSVerify, "insecure-skip-tls-verify", false, "If true, the server's certificate will not be checked for validity. This will make your HTTPS connections insecure")
 
+	cmd.Flags().Int64Var(&flags.BlobMaximumRunning, "blob-maximum-running", flags.BlobMaximumRunning, "Maximum number of running blob sync tasks")
+	cmd.Flags().Int64Var(&flags.BlobMinimumChunkSize, "blob-minimum-chunk-size", flags.BlobMinimumChunkSize, "Minimum chunk size for blob sync tasks")
 	return cmd
 }
 
@@ -303,11 +311,23 @@ func runE(ctx context.Context, flags *flagpole) error {
 			chunkInformer := sharedInformerFactory.Task().V1alpha1().Chunks()
 			go chunkInformer.Informer().RunWithContext(ctx)
 
+			cidnClient, err := cidn.NewCIDN(
+				cidn.WithClient(clientset),
+				cidn.WithBlobInformer(blobInformer),
+				cidn.WithChunkInformer(chunkInformer),
+				cidn.WithDestination(u.Scheme),
+				cidn.WithMaximumRunning(flags.BlobMaximumRunning),
+				cidn.WithMinimumChunkSize(flags.BlobMinimumChunkSize),
+			)
+			if err != nil {
+				return fmt.Errorf("failed to create CIDN client: %w", err)
+			}
+
 			manifestsOpts = append(manifestsOpts,
-				manifests.WithCIDNClient(clientset, blobInformer, chunkInformer, u.Scheme),
+				manifests.WithCIDNClient(cidnClient),
 			)
 			blobsOpts = append(blobsOpts,
-				blobs.WithCIDNClient(clientset, blobInformer, u.Scheme),
+				blobs.WithCIDNClient(cidnClient),
 			)
 		}
 
