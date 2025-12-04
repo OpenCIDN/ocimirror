@@ -166,7 +166,7 @@ func (c *Gateway) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 
 	info, ok := parseOriginPathInfo(oriPath)
 	if !ok {
-		utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
+		utils.ServeError(rw, r, errcode.ErrorCodeUnsupported, 0)
 		return
 	}
 
