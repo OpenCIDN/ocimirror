@@ -129,6 +129,12 @@ func (c *Gateway) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	info, ok := parseOriginPathInfo(oriPath)
+	if !ok {
+		utils.ServeError(rw, r, errcode.ErrorCodeUnsupported, 0)
+		return
+	}
+
 	r.RemoteAddr = utils.GetIP(r.RemoteAddr)
 
 	var t token.Token
@@ -162,12 +168,6 @@ func (c *Gateway) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-	}
-
-	info, ok := parseOriginPathInfo(oriPath)
-	if !ok {
-		utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
-		return
 	}
 
 	if t.Attribute.Host != "" {
