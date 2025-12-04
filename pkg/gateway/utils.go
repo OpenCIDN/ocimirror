@@ -100,6 +100,8 @@ func parseOriginPathInfo(path string) (*PathInfo, bool) {
 		if len(info.Blobs) != 7+64 {
 			return nil, false
 		}
+	default:
+		return info, false
 	}
 	return info, true
 }
