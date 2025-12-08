@@ -45,7 +45,7 @@ services:
     restart: unless-stopped
     stop_signal: SIGINT
     stop_grace_period: 3s
-    image: m.daocloud.io/ghcr.io/opencidn/cidn/apiserver:v0.0.88
+    image: m.daocloud.io/ghcr.io/opencidn/cidn/apiserver:v0.0.102
     depends_on:
       etcd:
         condition: service_started
@@ -62,7 +62,7 @@ services:
     restart: unless-stopped
     stop_signal: SIGINT
     stop_grace_period: 10s
-    image: m.daocloud.io/ghcr.io/opencidn/cidn/controller-manager:v0.0.88
+    image: m.daocloud.io/ghcr.io/opencidn/cidn/controller-manager:v0.0.102
     depends_on:
       apiserver:
         condition: service_started
@@ -76,7 +76,7 @@ services:
     restart: unless-stopped
     stop_signal: SIGINT
     stop_grace_period: 10s
-    image: m.daocloud.io/ghcr.io/opencidn/cidn/runner:v0.0.88
+    image: m.daocloud.io/ghcr.io/opencidn/cidn/runner:v0.0.102
     depends_on:
       apiserver:
         condition: service_started
@@ -90,7 +90,7 @@ services:
 
   webui:
     restart: unless-stopped
-    image: m.daocloud.io/ghcr.io/opencidn/cidn/webui:v0.0.88
+    image: m.daocloud.io/ghcr.io/opencidn/cidn/webui:v0.0.102
     depends_on:
       apiserver:
         condition: service_started
@@ -119,6 +119,6 @@ services:
     - --address=:8000
     - --default-registry=docker.io
     - --storage-url=sss://minioadmin:minioadmin@cidn-test-bucket.us-east-1?forcepathstyle=true&secure=false&chunksize=104857600&regionendpoint=http://minio:9000
-    - --link-expires=1m
+    - --no-redirect
     - --master=https://admin:admin-pwd@apiserver:6443
     - --insecure-skip-tls-verify
