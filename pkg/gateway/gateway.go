@@ -215,6 +215,11 @@ func (c *Gateway) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if info.Referrers != "" {
+		utils.ResponseEmptyReferrersList(rw, r)
+		return
+	}
+
 	if info.Blobs != "" {
 		c.blob(rw, r, info, &t, authData)
 		return

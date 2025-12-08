@@ -27,6 +27,14 @@ func ResponseEmptyTagsList(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, emptyTagsList)
 }
 
+func ResponseEmptyReferrersList(w http.ResponseWriter, r *http.Request) {
+	const emptyReferrersList = `{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[]}`
+
+	w.Header().Set("Content-Type", "application/vnd.oci.image.index.v1+json")
+	w.Header().Set("Content-Length", fmt.Sprint(len(emptyReferrersList)))
+	fmt.Fprint(w, emptyReferrersList)
+}
+
 func GetIP(str string) string {
 	host, _, err := net.SplitHostPort(str)
 	if err == nil && host != "" {

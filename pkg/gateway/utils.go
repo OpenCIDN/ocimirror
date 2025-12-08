@@ -30,6 +30,7 @@ type PathInfo struct {
 	Manifests         string
 	IsDigestManifests bool
 	Blobs             string
+	Referrers         string
 }
 
 func (p PathInfo) Path() (string, error) {
@@ -41,6 +42,9 @@ func (p PathInfo) Path() (string, error) {
 	}
 	if p.Blobs != "" {
 		return prefix + p.Image + "/blobs/" + p.Blobs, nil
+	}
+	if p.Referrers != "" {
+		return prefix + p.Image + "/referrers/" + p.Referrers, nil
 	}
 	return "", fmt.Errorf("unknow kind %#v", p)
 }
@@ -100,6 +104,8 @@ func parseOriginPathInfo(path string) (*PathInfo, bool) {
 		if len(info.Blobs) != 7+64 {
 			return nil, false
 		}
+	case "referrers":
+		info.Referrers = tails[len(tails)-1]
 	default:
 		return info, false
 	}
