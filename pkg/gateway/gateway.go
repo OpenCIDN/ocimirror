@@ -13,6 +13,7 @@ import (
 	"github.com/OpenCIDN/ocimirror/internal/utils"
 	"github.com/OpenCIDN/ocimirror/pkg/blobs"
 	"github.com/OpenCIDN/ocimirror/pkg/manifests"
+	"github.com/OpenCIDN/ocimirror/pkg/tags"
 	"github.com/OpenCIDN/ocimirror/pkg/token"
 	"github.com/docker/distribution/registry/api/errcode"
 	"golang.org/x/time/rate"
@@ -41,6 +42,7 @@ type Gateway struct {
 
 	blobs     *blobs.Blobs
 	manifests *manifests.Manifests
+	tags      *tags.Tags
 }
 
 type Option func(c *Gateway)
@@ -96,6 +98,12 @@ func WithBlobs(a *blobs.Blobs) Option {
 func WithManifests(a *manifests.Manifests) Option {
 	return func(c *Gateway) {
 		c.manifests = a
+	}
+}
+
+func WithTags(a *tags.Tags) Option {
+	return func(c *Gateway) {
+		c.tags = a
 	}
 }
 
@@ -210,8 +218,13 @@ func (c *Gateway) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		info.Image = n.Name
 	}
 
-	if c.disableTagsList && info.TagsList && !t.AllowTagsList {
-		utils.ResponseEmptyTagsList(rw, r)
+	if info.TagsList {
+		if c.disableTagsList && !t.AllowTagsList {
+			utils.ResponseEmptyTagsList(rw, r)
+			return
+		}
+
+		c.tag(rw, r, info, &t)
 		return
 	}
 

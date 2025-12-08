@@ -24,6 +24,7 @@ import (
 	"github.com/OpenCIDN/ocimirror/pkg/gateway"
 	"github.com/OpenCIDN/ocimirror/pkg/manifests"
 	"github.com/OpenCIDN/ocimirror/pkg/signing"
+	"github.com/OpenCIDN/ocimirror/pkg/tags"
 	"github.com/OpenCIDN/ocimirror/pkg/token"
 	"github.com/OpenCIDN/ocimirror/pkg/transport"
 	"github.com/gorilla/handlers"
@@ -284,6 +285,10 @@ func runE(ctx context.Context, flags *flagpole) error {
 			blobs.WithCache(sdcache),
 		)
 
+		tagsOpts := []tags.Option{
+			tags.WithCache(sdcache),
+		}
+
 		if flags.Kubeconfig != "" || flags.Master != "" {
 			if flags.StorageURL == "" {
 				return fmt.Errorf("--storage-url is required when using CIDN")
@@ -347,9 +352,17 @@ func runE(ctx context.Context, flags *flagpole) error {
 			return fmt.Errorf("failed to create blobs: %w", err)
 		}
 
+		tag, err := tags.NewTags(
+			tagsOpts...,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create tags: %w", err)
+		}
+
 		gatewayOpts = append(gatewayOpts,
 			gateway.WithManifests(manifest),
 			gateway.WithBlobs(blob),
+			gateway.WithTags(tag),
 		)
 	}
 
