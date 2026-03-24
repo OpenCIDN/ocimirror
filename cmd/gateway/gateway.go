@@ -71,6 +71,8 @@ type flagpole struct {
 
 	NoRedirect bool
 
+	TeeResponse bool
+
 	DefaultRegistry         string
 	OverrideDefaultRegistry map[string]string
 
@@ -127,6 +129,7 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&flags.ReadmeURL, "readme-url", flags.ReadmeURL, "Readme url")
 
 	cmd.Flags().BoolVar(&flags.NoRedirect, "no-redirect", flags.NoRedirect, "Disable blob redirects and serve blobs directly")
+	cmd.Flags().BoolVar(&flags.TeeResponse, "tee-response", flags.TeeResponse, "Serve blobs to clients while simultaneously caching them")
 
 	cmd.Flags().StringVar(&flags.DefaultRegistry, "default-registry", flags.DefaultRegistry, "default registry used for non full-path docker pull, like:docker.io")
 	cmd.Flags().StringToStringVar(&flags.OverrideDefaultRegistry, "override-default-registry", flags.OverrideDefaultRegistry, "override default registry")
@@ -241,6 +244,7 @@ func runE(ctx context.Context, flags *flagpole) error {
 			blobs.WithLogger(logger),
 			blobs.WithAuthenticator(authenticator),
 			blobs.WithNoRedirect(flags.NoRedirect),
+			blobs.WithTeeResponse(flags.TeeResponse),
 		}
 
 		cacheOpts := []cache.Option{

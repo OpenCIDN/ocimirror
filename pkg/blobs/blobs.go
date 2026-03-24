@@ -42,7 +42,9 @@ type Blobs struct {
 
 	authenticator *token.Authenticator
 
-	noRedirect bool
+	noRedirect  bool
+	teeResponse bool
+	teeCache    teeCacheMap
 
 	cidn *cidn.CIDN
 }
@@ -80,6 +82,13 @@ func WithClient(client *http.Client) Option {
 func WithNoRedirect(noRedirect bool) Option {
 	return func(c *Blobs) error {
 		c.noRedirect = noRedirect
+		return nil
+	}
+}
+
+func WithTeeResponse(teeResponse bool) Option {
+	return func(c *Blobs) error {
+		c.teeResponse = teeResponse
 		return nil
 	}
 }
@@ -234,6 +243,11 @@ func (b *Blobs) Serve(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t
 
 		b.cache.CleanCacheStatBlob(info.Blobs)
 	} else {
+		if b.teeResponse {
+			if b.serveTee(rw, r, info) {
+				return
+			}
+		}
 		sc, err := b.cacheBlob(info)
 		if err != nil {
 			b.logger.Warn("failed download file", "info", info, "error", err)

@@ -61,6 +61,8 @@ type flagpole struct {
 
 	NoRedirect bool
 
+	TeeResponse bool
+
 	Kubeconfig            string
 	Master                string
 	InsecureSkipTLSVerify bool
@@ -108,6 +110,7 @@ func NewCommand() *cobra.Command {
 	cmd.Flags().StringVar(&flags.TokenURL, "token-url", flags.TokenURL, "Token url")
 
 	cmd.Flags().BoolVar(&flags.NoRedirect, "no-redirect", flags.NoRedirect, "Disable blob redirects and serve blobs directly")
+	cmd.Flags().BoolVar(&flags.TeeResponse, "tee-response", flags.TeeResponse, "Serve blobs to clients while simultaneously caching them")
 
 	cmd.Flags().StringVar(&flags.Kubeconfig, "kubeconfig", flags.Kubeconfig, "Path to the kubeconfig file to use")
 	cmd.Flags().StringVar(&flags.Master, "master", flags.Master, "The address of the Kubernetes API server")
@@ -158,6 +161,7 @@ func runE(ctx context.Context, flags *flagpole) error {
 		blobs.WithCache(sdcache),
 		blobs.WithLogger(logger),
 		blobs.WithNoRedirect(flags.NoRedirect),
+		blobs.WithTeeResponse(flags.TeeResponse),
 	)
 
 	if flags.Kubeconfig != "" || flags.Master != "" {

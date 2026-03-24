@@ -17,6 +17,7 @@ require (
 	github.com/wzshiming/hostmatcher v0.0.3
 	github.com/wzshiming/httpseek v0.5.0
 	github.com/wzshiming/imc v0.0.0-20250106051804-1cb884b5184a
+	github.com/wzshiming/ioswmr v0.1.0
 	github.com/wzshiming/sss v0.4.0
 	golang.org/x/crypto v0.45.0
 	golang.org/x/sync v0.18.0
@@ -56,7 +57,6 @@ require (
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/spf13/pflag v1.0.6 // indirect
-	github.com/wzshiming/ioswmr v0.1.0 // indirect
 	github.com/wzshiming/trie v0.3.1 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
