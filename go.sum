@@ -138,6 +138,8 @@ github.com/wzshiming/httpseek v0.5.0 h1:9pFLlTcebylAtLA4ni0Qo5xwXTgeQOo0iVQA3G1Q
 github.com/wzshiming/httpseek v0.5.0/go.mod h1:YoZhlLIwNjTBDXIT8NpK5zRjOgZouRXPaBfjVXdqMMs=
 github.com/wzshiming/imc v0.0.0-20250106051804-1cb884b5184a h1:yUonFTTPA3PrOz4J1RTvK7gbTn+iiwX6VAJdNCCu3is=
 github.com/wzshiming/imc v0.0.0-20250106051804-1cb884b5184a/go.mod h1:U4qkQ1uQB16r15JFVbbTmevsVJnqBz9p/sHdIThCs/A=
+github.com/wzshiming/ioswmr v0.1.0 h1:n3dOqN1+GUOCg6CBkhaKgRH3j5sVzOCKXLcdMUlu/SE=
+github.com/wzshiming/ioswmr v0.1.0/go.mod h1:TwwDyS1wnJG3AvKliA+PPB0kliN3yEjsabtH4o7xySQ=
 github.com/wzshiming/sss v0.4.0 h1:EqlEAixN7Zsum68pjZLhaB0X3YmTFwiEN4RuzBGbMdc=
 github.com/wzshiming/sss v0.4.0/go.mod h1:4FNGdjjLOzcmZtcCOW+cpL4dmJvg4pMeek0UQy5/FCg=
 github.com/wzshiming/trie v0.3.1 h1:YpuoqmEQFJiW0mns/mM6Qk4kdWrXc8kc28/KR1vn0m8=
