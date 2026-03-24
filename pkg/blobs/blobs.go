@@ -21,6 +21,7 @@ import (
 	"github.com/OpenCIDN/ocimirror/pkg/token"
 	"github.com/docker/distribution/registry/api/errcode"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
+	"golang.org/x/sync/singleflight"
 	"golang.org/x/time/rate"
 )
 
@@ -37,6 +38,7 @@ type BlobInfo struct {
 
 type Blobs struct {
 	httpClient *http.Client
+	flight     singleflight.Group
 	logger     *slog.Logger
 	cache      *cache.Cache
 
@@ -194,15 +196,47 @@ func (b *Blobs) serveCache(rw http.ResponseWriter, r *http.Request, info *BlobIn
 	return false
 }
 
+func (b *Blobs) cacheBlobOnce(r *http.Request, info *BlobInfo, t *token.Token) (int, error) {
+	v, err, _ := b.flight.Do(info.Blobs, func() (interface{}, error) {
+		if _, statErr := b.cache.StatBlob(context.Background(), info.Blobs); statErr == nil {
+			return 0, nil
+		}
+
+		if b.cidn != nil {
+			var syncErr error
+			if info.Host == "ollama.com" {
+				syncErr = b.cidn.Blob(r.Context(), info.Host, info.Image, info.Blobs, true, int64(t.Weight))
+			} else {
+				syncErr = b.cidn.Blob(r.Context(), info.Host, info.Image, info.Blobs, false, int64(t.Weight))
+			}
+
+			if syncErr == nil {
+				b.cache.CleanCacheStatBlob(info.Blobs)
+			}
+			return 0, syncErr
+		}
+
+		sc, downloadErr := b.cacheBlob(info)
+		if downloadErr != nil {
+			return sc, downloadErr
+		}
+		b.logger.Info("finish caching blob", "info", info)
+		return sc, nil
+	})
+
+	sc, _ := v.(int)
+	return sc, err
+}
+
 func (b *Blobs) Serve(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t *token.Token) {
 	if b.serveCache(rw, r, info, t) {
 		return
 	}
 
-	if b.cidn != nil {
-		if info.Host == "ollama.com" {
-			err := b.cidn.Blob(r.Context(), info.Host, info.Image, info.Blobs, true, int64(t.Weight))
-			if err != nil {
+	sc, err := b.cacheBlobOnce(r, info, t)
+	if err != nil {
+		if b.cidn != nil {
+			if info.Host == "ollama.com" {
 				errStr := err.Error()
 				if strings.Contains(errStr, "status code: got 404") {
 					utils.ServeError(rw, r, errcode.ErrorCodeDenied, http.StatusNotFound)
@@ -210,37 +244,28 @@ func (b *Blobs) Serve(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t
 				}
 				b.logger.Warn("failed to sync blob with CIDN", "error", err)
 				utils.ServeError(rw, r, errcode.ErrorCodeUnknown, 0)
-			}
-
-		} else {
-			err := b.cidn.Blob(r.Context(), info.Host, info.Image, info.Blobs, false, int64(t.Weight))
-			if err != nil {
-				errStr := err.Error()
-				if strings.Contains(errStr, "status code: got 404") {
-					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
-					return
-				} else if strings.Contains(errStr, "status code: got 403") {
-					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
-					return
-				} else if strings.Contains(errStr, "status code: got 401") {
-					utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
-					return
-				}
-				b.logger.Warn("failed to sync blob with CIDN", "error", err)
-				utils.ServeError(rw, r, errcode.ErrorCodeUnknown, 0)
 				return
 			}
-		}
 
-		b.cache.CleanCacheStatBlob(info.Blobs)
-	} else {
-		sc, err := b.cacheBlob(info)
-		if err != nil {
-			b.logger.Warn("failed download file", "info", info, "error", err)
-			utils.ServeError(rw, r, err, sc)
+			errStr := err.Error()
+			if strings.Contains(errStr, "status code: got 404") {
+				utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
+				return
+			} else if strings.Contains(errStr, "status code: got 403") {
+				utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
+				return
+			} else if strings.Contains(errStr, "status code: got 401") {
+				utils.ServeError(rw, r, errcode.ErrorCodeDenied, 0)
+				return
+			}
+			b.logger.Warn("failed to sync blob with CIDN", "error", err)
+			utils.ServeError(rw, r, errcode.ErrorCodeUnknown, 0)
 			return
 		}
-		b.logger.Info("finish caching blob", "info", info)
+
+		b.logger.Warn("failed download file", "info", info, "error", err)
+		utils.ServeError(rw, r, err, sc)
+		return
 	}
 
 	if b.serveCache(rw, r, info, t) {

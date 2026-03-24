@@ -21,10 +21,12 @@ import (
 	"github.com/OpenCIDN/ocimirror/pkg/token"
 	"github.com/docker/distribution/registry/api/errcode"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
+	"golang.org/x/sync/singleflight"
 )
 
 type Manifests struct {
 	httpClient *http.Client
+	flight     singleflight.Group
 	logger     *slog.Logger
 	cache      *cache.Cache
 
@@ -108,6 +110,27 @@ func (c *Manifests) runAsyncWorker() {
 	}
 }
 
+func (c *Manifests) cacheManifestOnce(info *PathInfo, t *token.Token) (int, error) {
+	key := fmt.Sprintf("%s/%s/%s", info.Host, info.Image, info.Manifests)
+	v, err, _ := c.flight.Do(key, func() (interface{}, error) {
+		if _, cacheErr := c.cache.GetManifestContent(context.Background(), info.Host, info.Image, info.Manifests); cacheErr == nil {
+			return 0, nil
+		}
+
+		if c.cidn != nil {
+			if info.Host == "ollama.com" {
+				return c.cacheManifestWithCIDNForOllama(info, t)
+			}
+			return c.cacheManifestWithCIDN(info, t)
+		}
+
+		return c.cacheManifest(info)
+	})
+
+	sc, _ := v.(int)
+	return sc, err
+}
+
 func (c *Manifests) Serve(rw http.ResponseWriter, r *http.Request, info *PathInfo, t *token.Token) {
 	if c.serveCache(rw, r, info) {
 		if !info.IsDigestManifests {
@@ -116,43 +139,12 @@ func (c *Manifests) Serve(rw http.ResponseWriter, r *http.Request, info *PathInf
 		return
 	}
 
-	// Use CIDN for manifest syncing if configured
-	if c.cidn != nil {
-		// Synchronously cache the manifest
-		if info.Host == "ollama.com" {
-			sc, err := c.cacheManifestWithCIDNForOllama(info, t)
-			if err != nil {
+	sc, err := c.cacheManifestOnce(info, t)
+	if err != nil {
+		if c.cidn != nil {
+			if info.Host == "ollama.com" {
 				errStr := err.Error()
 				if strings.Contains(errStr, "status code: got 404") {
-					utils.ServeError(rw, r, errcode.ErrorCodeDenied, sc)
-					return
-				}
-				c.logger.Warn("failed to cache manifest with cidn", "info", info, "error", err)
-				utils.ServeError(rw, r, err, sc)
-				return
-			}
-		} else {
-			sc, err := c.cacheManifestWithCIDN(info, t)
-			if err != nil {
-				errStr := err.Error()
-				if strings.Contains(errStr, "status code: got 404") {
-					utils.ServeError(rw, r, errcode.ErrorCodeDenied, sc)
-					return
-				} else if strings.Contains(errStr, "status code: got 403") {
-					utils.ServeError(rw, r, errcode.ErrorCodeDenied, sc)
-					return
-				} else if strings.Contains(errStr, "status code: got 401") {
-					utils.ServeError(rw, r, errcode.ErrorCodeDenied, sc)
-					return
-				} else if strings.Contains(errStr, "status code: got 412") {
-					// For gcr.io
-					// unexpected status code 412 Precondition Failed: Container Registry is deprecated and shutting down, please use the auto migration tool to migrate to Artifact Registry (gcloud artifacts docker upgrade migrate --projects='arrikto'). For more details see: https://cloud.google.com/artifact-registry/docs/transition/auto-migrate-gcr-ar"
-					utils.ServeError(rw, r, errcode.ErrorCodeDenied, sc)
-					return
-				} else if strings.Contains(errStr, "unsupported target response") {
-					utils.ServeError(rw, r, errcode.ErrorCodeDenied, sc)
-					return
-				} else if strings.Contains(errStr, "DENIED") {
 					utils.ServeError(rw, r, errcode.ErrorCodeDenied, sc)
 					return
 				}
@@ -161,15 +153,36 @@ func (c *Manifests) Serve(rw http.ResponseWriter, r *http.Request, info *PathInf
 				utils.ServeError(rw, r, err, sc)
 				return
 			}
-		}
-	} else {
-		// Synchronously cache the manifest
-		sc, err := c.cacheManifest(info)
-		if err != nil {
-			c.logger.Warn("failed to cache manifest", "info", info, "error", err)
+
+			errStr := err.Error()
+			if strings.Contains(errStr, "status code: got 404") {
+				utils.ServeError(rw, r, errcode.ErrorCodeDenied, sc)
+				return
+			} else if strings.Contains(errStr, "status code: got 403") {
+				utils.ServeError(rw, r, errcode.ErrorCodeDenied, sc)
+				return
+			} else if strings.Contains(errStr, "status code: got 401") {
+				utils.ServeError(rw, r, errcode.ErrorCodeDenied, sc)
+				return
+			} else if strings.Contains(errStr, "status code: got 412") {
+				utils.ServeError(rw, r, errcode.ErrorCodeDenied, sc)
+				return
+			} else if strings.Contains(errStr, "unsupported target response") {
+				utils.ServeError(rw, r, errcode.ErrorCodeDenied, sc)
+				return
+			} else if strings.Contains(errStr, "DENIED") {
+				utils.ServeError(rw, r, errcode.ErrorCodeDenied, sc)
+				return
+			}
+
+			c.logger.Warn("failed to cache manifest with cidn", "info", info, "error", err)
 			utils.ServeError(rw, r, err, sc)
 			return
 		}
+
+		c.logger.Warn("failed to cache manifest", "info", info, "error", err)
+		utils.ServeError(rw, r, err, sc)
+		return
 	}
 
 	if c.serveCache(rw, r, info) {
