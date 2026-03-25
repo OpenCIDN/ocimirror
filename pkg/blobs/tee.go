@@ -161,21 +161,28 @@ func (b *Blobs) serveTee(rw http.ResponseWriter, r *http.Request, info *BlobInfo
 		return true
 	}
 
-	// Start a new tee download.
-	tee, err := b.startTeeBlob(r.Context(), info)
+	itee, err, _ := b.flight.Do(info.Blobs, func() (any, error) {
+		// Start a new tee download.
+		tee, err := b.startTeeBlob(r.Context(), info)
+		if err != nil {
+			b.logger.Warn("failed to start tee blob", "digest", info.Blobs, "error", err)
+			return nil, err
+		}
+
+		// Atomically register the tee so that concurrent requests for the same blob
+		// share this download. If another goroutine already registered one we use
+		// ours; the duplicate background download is harmless (identical content).
+		actual, loaded := b.teeCache.LoadOrStore(info.Blobs, tee)
+		if loaded {
+			return actual.(*teeBlob), nil
+		}
+
+		return tee, nil
+	})
 	if err != nil {
-		b.logger.Warn("failed to start tee blob", "digest", info.Blobs, "error", err)
 		return false
 	}
 
-	// Atomically register the tee so that concurrent requests for the same blob
-	// share this download. If another goroutine already registered one we use
-	// ours; the duplicate background download is harmless (identical content).
-	actual, loaded := b.teeCache.LoadOrStore(info.Blobs, tee)
-	if loaded {
-		tee = actual.(*teeBlob)
-	}
-
-	b.serveTeeBlob(rw, r, tee)
+	b.serveTeeBlob(rw, r, itee.(*teeBlob))
 	return true
 }

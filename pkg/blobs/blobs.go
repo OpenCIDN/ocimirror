@@ -22,6 +22,7 @@ import (
 	"github.com/OpenCIDN/ocimirror/pkg/token"
 	"github.com/docker/distribution/registry/api/errcode"
 	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
+	"golang.org/x/sync/singleflight"
 	"golang.org/x/time/rate"
 )
 
@@ -42,6 +43,8 @@ type Blobs struct {
 	cache      *cache.Cache
 
 	authenticator *token.Authenticator
+
+	flight singleflight.Group
 
 	noRedirect  bool
 	teeResponse bool
@@ -249,10 +252,16 @@ func (b *Blobs) Serve(rw http.ResponseWriter, r *http.Request, info *BlobInfo, t
 				return
 			}
 		}
-		sc, err := b.cacheBlob(info)
+
+		sc, err, _ := b.flight.Do(info.Blobs, func() (any, error) {
+			sc, err := b.cacheBlob(info)
+			if err != nil {
+				b.logger.Warn("failed download file", "info", info, "error", err)
+			}
+			return int(sc), err
+		})
 		if err != nil {
-			b.logger.Warn("failed download file", "info", info, "error", err)
-			utils.ServeError(rw, r, err, sc)
+			utils.ServeError(rw, r, err, sc.(int))
 			return
 		}
 		b.logger.Info("finish caching blob", "info", info)
