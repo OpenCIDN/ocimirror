@@ -17,6 +17,7 @@ require (
 	github.com/wzshiming/hostmatcher v0.0.3
 	github.com/wzshiming/httpseek v0.5.0
 	github.com/wzshiming/imc v0.0.0-20250106051804-1cb884b5184a
+	github.com/wzshiming/ioswmr v0.1.0
 	github.com/wzshiming/sss v0.4.0
 	golang.org/x/crypto v0.45.0
 	golang.org/x/sync v0.18.0
