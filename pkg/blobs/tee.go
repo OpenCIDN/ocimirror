@@ -170,7 +170,7 @@ func (b *Blobs) serveTee(rw http.ResponseWriter, r *http.Request, info *BlobInfo
 
 	itee, err, _ := b.flight.Do(info.Blobs, func() (any, error) {
 		// Start a new tee download.
-		tee, err := b.startTeeBlob(r.Context(), info)
+		tee, err := b.startTeeBlob(context.Background(), info)
 		if err != nil {
 			b.logger.Warn("failed to start tee blob", "digest", info.Blobs, "error", err)
 			return nil, err
