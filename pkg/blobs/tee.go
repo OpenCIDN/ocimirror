@@ -2,20 +2,23 @@ package blobs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
 	"net/url"
-	"os"
+	"path"
 	"time"
 
 	"github.com/wzshiming/ioswmr"
 )
 
 type teeBlob struct {
-	swmr ioswmr.SWMR
-	size int64
+	swmr    ioswmr.SWMR
+	size    int64
+	modTime time.Time
+	name    string
 }
 
 // startTeeBlob initiates a streaming download of a blob that is simultaneously
@@ -61,69 +64,73 @@ func (b *Blobs) startTeeBlob(ctx context.Context, info *BlobInfo) (*teeBlob, err
 
 	digest := info.Blobs
 
-	// tee is declared before the SWMR so that AfterCloseFunc can reference it
-	// with a pointer-equality check via CompareAndDelete.
 	var tee *teeBlob
 
-	var swmrOpts []ioswmr.Option
-	swmrOpts = append(swmrOpts, ioswmr.WithAutoClose())
-	swmrOpts = append(swmrOpts, ioswmr.WithAfterCloseFunc(func(_ error) error {
-		// Only remove our entry from the map; leave it alone if another tee
-		// has already replaced ours (e.g. due to the LoadOrStore race).
-		b.teeCache.CompareAndDelete(digest, tee)
-		return nil
-	}))
-	if size > 0 && size <= math.MaxInt {
-		swmrOpts = append(swmrOpts, ioswmr.WithLength(int(size)))
-	}
-
 	swmr := ioswmr.NewSWMR(
-		ioswmr.NewTemporaryFileBuffer(func() (*os.File, error) {
-			return os.CreateTemp("", "ocimirror-tee-*")
+		ioswmr.NewMemoryOrTemporaryFileBuffer(nil, nil),
+		ioswmr.WithAutoClose(),
+		ioswmr.WithBeforeCloseFunc(func() {
+			b.cache.CleanCacheStatBlob(digest)
+			b.teeCache.Delete(digest)
 		}),
-		swmrOpts...,
 	)
 
 	tee = &teeBlob{
-		swmr: swmr,
-		size: size,
+		swmr:    swmr,
+		size:    size,
+		modTime: time.Now(),
+		name:    path.Base(u.Path),
 	}
 
 	b.logger.Info("starting tee blob download", "digest", digest, "size", size)
 
+	sw := swmr.Writer()
 	go func() {
-		w := swmr.Writer()
 		defer resp.Body.Close()
-		defer fw.Close()
-
-		mw := io.MultiWriter(w, fw)
-		n, copyErr := io.Copy(mw, resp.Body)
+		n, copyErr := io.Copy(sw, resp.Body)
 
 		if copyErr != nil {
 			b.logger.Warn("tee blob copy error", "digest", digest, "error", copyErr)
-			_ = fw.Cancel(context.Background())
-			_ = w.CloseWithError(copyErr)
+			_ = sw.CloseWithError(copyErr)
 			return
 		}
 
 		if size > 0 && n != size {
 			sizeErr := fmt.Errorf("tee blob size mismatch: expected %d, got %d", size, n)
 			b.logger.Warn("tee blob size error", "digest", digest, "error", sizeErr)
+			_ = sw.CloseWithError(sizeErr)
+			return
+		}
+
+		_ = sw.Close()
+	}()
+
+	r := swmr.NewReader(0)
+
+	go func() {
+		defer r.Close()
+		defer fw.Close()
+
+		n, err := io.Copy(fw, r)
+		if err != nil && !errors.Is(err, io.EOF) {
+			b.logger.Warn("tee blob cache copy error", "digest", digest, "error", err)
 			_ = fw.Cancel(context.Background())
-			_ = w.CloseWithError(sizeErr)
 			return
 		}
 
-		commitErr := fw.Commit(context.Background())
-		if commitErr != nil {
+		if size > 0 && n != size {
+			sizeErr := fmt.Errorf("tee blob size mismatch: expected %d, got %d", size, n)
+			b.logger.Warn("tee blob cache size error", "digest", digest, "error", sizeErr)
+			_ = fw.Cancel(context.Background())
+			return
+		}
+
+		if commitErr := fw.Commit(context.Background()); commitErr != nil {
 			b.logger.Warn("tee blob commit error", "digest", digest, "error", commitErr)
-			_ = w.CloseWithError(commitErr)
 			return
 		}
 
-		b.cache.CleanCacheStatBlob(digest)
 		b.logger.Info("tee blob cached", "digest", digest, "size", n)
-		_ = w.Close()
 	}()
 
 	return tee, nil
@@ -139,7 +146,7 @@ func (b *Blobs) serveTeeBlob(rw http.ResponseWriter, r *http.Request, tee *teeBl
 	if size > 0 && size <= math.MaxInt {
 		rs := tee.swmr.NewReadSeeker(0, int(size))
 		defer rs.Close()
-		http.ServeContent(rw, r, "", time.Time{}, rs)
+		http.ServeContent(rw, r, tee.name, tee.modTime, rs)
 	} else {
 		rc := tee.swmr.NewReader(0)
 		defer rc.Close()
