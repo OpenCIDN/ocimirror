@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"sync"
 	"time"
 
 	"github.com/wzshiming/ioswmr"
@@ -180,6 +179,3 @@ func (b *Blobs) serveTee(rw http.ResponseWriter, r *http.Request, info *BlobInfo
 	b.serveTeeBlob(rw, r, tee)
 	return true
 }
-
-// teeCacheMap is the type alias used for the tee deduplication store.
-type teeCacheMap = sync.Map

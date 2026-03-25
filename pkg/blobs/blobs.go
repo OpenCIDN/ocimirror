@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/OpenCIDN/ocimirror/internal/seeker"
@@ -44,7 +45,7 @@ type Blobs struct {
 
 	noRedirect  bool
 	teeResponse bool
-	teeCache    teeCacheMap
+	teeCache    sync.Map
 
 	cidn *cidn.CIDN
 }
