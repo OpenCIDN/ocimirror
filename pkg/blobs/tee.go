@@ -8,7 +8,6 @@ import (
 	"math"
 	"net/http"
 	"net/url"
-	"os"
 	"path"
 	"time"
 
@@ -18,7 +17,6 @@ import (
 type teeBlob struct {
 	swmr    ioswmr.SWMR
 	size    int64
-	etag    string
 	modTime time.Time
 	name    string
 }
@@ -66,38 +64,22 @@ func (b *Blobs) startTeeBlob(ctx context.Context, info *BlobInfo) (*teeBlob, err
 
 	digest := info.Blobs
 
-	// tee is declared before the SWMR so that AfterCloseFunc can reference it
-	// with a pointer-equality check via CompareAndDelete.
 	var tee *teeBlob
 
-	var swmrOpts []ioswmr.Option
-	swmrOpts = append(swmrOpts, ioswmr.WithAutoClose())
-	swmrOpts = append(swmrOpts, ioswmr.WithAfterCloseFunc(func(_ error) error {
-		// Only remove our entry from the map; leave it alone if another tee
-		// has already replaced ours (e.g. due to the LoadOrStore race).
-		b.teeCache.CompareAndDelete(digest, tee)
-		return nil
-	}))
-	if size > 0 && size <= math.MaxInt {
-		swmrOpts = append(swmrOpts, ioswmr.WithLength(int(size)))
-	}
-
 	swmr := ioswmr.NewSWMR(
-		ioswmr.NewTemporaryFileBuffer(func() (*os.File, error) {
-			return os.CreateTemp("", "ocimirror-tee-*")
+		ioswmr.NewMemoryOrTemporaryFileBuffer(nil, nil),
+		ioswmr.WithAutoClose(),
+		ioswmr.WithBeforeCloseFunc(func() {
+			b.cache.CleanCacheStatBlob(digest)
+			b.teeCache.Delete(digest)
 		}),
-		swmrOpts...,
 	)
 
 	tee = &teeBlob{
 		swmr:    swmr,
 		size:    size,
-		etag:    resp.Header.Get("ETag"),
 		modTime: time.Now(),
 		name:    path.Base(u.Path),
-	}
-	if tee.etag == "" {
-		tee.etag = digest
 	}
 
 	b.logger.Info("starting tee blob download", "digest", digest, "size", size)
@@ -123,8 +105,9 @@ func (b *Blobs) startTeeBlob(ctx context.Context, info *BlobInfo) (*teeBlob, err
 		_ = sw.Close()
 	}()
 
+	r := swmr.NewReader(0)
+
 	go func() {
-		r := swmr.NewReader(0)
 		defer r.Close()
 		defer fw.Close()
 
@@ -147,7 +130,6 @@ func (b *Blobs) startTeeBlob(ctx context.Context, info *BlobInfo) (*teeBlob, err
 			return
 		}
 
-		b.cache.CleanCacheStatBlob(digest)
 		b.logger.Info("tee blob cached", "digest", digest, "size", n)
 	}()
 
@@ -160,9 +142,6 @@ func (b *Blobs) startTeeBlob(ctx context.Context, info *BlobInfo) (*teeBlob, err
 func (b *Blobs) serveTeeBlob(rw http.ResponseWriter, r *http.Request, tee *teeBlob) {
 	size := tee.size
 	rw.Header().Set("Content-Type", "application/octet-stream")
-	if tee.etag != "" {
-		rw.Header().Set("ETag", tee.etag)
-	}
 
 	if size > 0 && size <= math.MaxInt {
 		rs := tee.swmr.NewReadSeeker(0, int(size))
