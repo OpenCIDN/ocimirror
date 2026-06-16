@@ -107,7 +107,7 @@ func (c *CIDN) Blob(ctx context.Context, host, image, digest string, forceAccept
 		switch blob.Status.Phase {
 		case v1alpha1.BlobPhaseSucceeded:
 			err := blobs.Delete(ctx, blobName, metav1.DeleteOptions{})
-			if err != nil {
+			if err != nil && !apierrors.IsNotFound(err) {
 				return fmt.Errorf("failed to delete blob %s: %w", blobName, err)
 			}
 			create = true
@@ -274,7 +274,7 @@ func (c *CIDN) ManifestDigest(ctx context.Context, host, image, digest, manifest
 		switch blob.Status.Phase {
 		case v1alpha1.BlobPhaseSucceeded:
 			err := blobs.Delete(ctx, blobName, metav1.DeleteOptions{})
-			if err != nil {
+			if err != nil && !apierrors.IsNotFound(err) {
 				return fmt.Errorf("failed to delete blob %s: %w", blobName, err)
 			}
 			create = true
