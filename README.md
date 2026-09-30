@@ -11,6 +11,11 @@
 
 This project builds upon [CRProxy](https://github.com/DaoCloud/crproxy) with enhanced features and improvements.
 
+## Origin
+
+ocimirror was founded by [DaoCloud](https://www.daocloud.io/) and builds upon
+[CRProxy](https://github.com/DaoCloud/crproxy).
+
 ## Usage
 
 To use ocimirror, add a prefix to your container image references
