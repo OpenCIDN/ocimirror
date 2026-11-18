@@ -96,9 +96,6 @@ type Response struct {
 }
 
 func (c *CIDN) Blob(ctx context.Context, host, image, digest string, forceAcceptRanges bool, priority int64) error {
-	sourceURL := fmt.Sprintf("https://%s/v2/%s/blobs/%s", host, image, digest)
-	cachePath := registry.BlobCachePath(digest)
-
 	blobName := blobName(host, image, digest)
 	blobs := c.client.TaskV1alpha1().Blobs()
 
@@ -121,45 +118,7 @@ func (c *CIDN) Blob(ctx context.Context, host, image, digest string, forceAccept
 	}
 
 	if create {
-		tags := []string{"blob"}
-		if priority > 0 {
-			tags = append(tags, fmt.Sprintf("P%d", priority))
-		}
-		annotations := map[string]string{
-			v1alpha1.WebuiDisplayNameAnnotation: digest,
-			v1alpha1.WebuiTagAnnotation:         strings.Join(tags, ","),
-			v1alpha1.ReleaseTTLAnnotation:       "1h",
-			v1alpha1.WebuiGroupAnnotation:       fmt.Sprintf("%s/%s", formatHost(host), image),
-		}
-
-		_, err := blobs.Create(ctx, &v1alpha1.Blob{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:        blobName,
-				Annotations: annotations,
-			},
-			Spec: v1alpha1.BlobSpec{
-				MaximumRetry:     3,
-				MaximumRunning:   c.maximumRunning,
-				MaximumPending:   1,
-				MinimumChunkSize: c.minimumChunkSize,
-				Priority:         priority,
-				Source: []v1alpha1.BlobSource{
-					{
-						URL:        sourceURL,
-						BearerName: bearerName(host, image),
-					},
-				},
-				Destination: []v1alpha1.BlobDestination{
-					{
-						Name:         c.destination,
-						Path:         cachePath,
-						SkipIfExists: true,
-					},
-				},
-				ForceAcceptRanges: forceAcceptRanges,
-				ContentSha256:     registry.CleanDigest(digest),
-			},
-		}, metav1.CreateOptions{})
+		_, err := blobs.Create(ctx, c.newBlob(host, image, digest, forceAcceptRanges, priority), metav1.CreateOptions{})
 		if err != nil && !apierrors.IsAlreadyExists(err) {
 			return err
 		}
@@ -177,6 +136,51 @@ func (c *CIDN) Blob(ctx context.Context, host, image, digest string, forceAccept
 		return fmt.Errorf("blob sync failed: %s", firstNonEmptyConditionMessage(b.Status.Conditions, "blob sync failed"))
 	default:
 		return fmt.Errorf("unexpected blob phase: %s", b.Status.Phase)
+	}
+}
+
+func (c *CIDN) newBlob(host, image, digest string, forceAcceptRanges bool, priority int64) *v1alpha1.Blob {
+	sourceURL := fmt.Sprintf("https://%s/v2/%s/blobs/%s", host, image, digest)
+	cachePath := registry.BlobCachePath(digest)
+
+	tags := []string{"blob"}
+	if priority > 0 {
+		tags = append(tags, fmt.Sprintf("P%d", priority))
+	}
+	annotations := map[string]string{
+		v1alpha1.WebuiDisplayNameAnnotation: digest,
+		v1alpha1.WebuiTagAnnotation:         strings.Join(tags, ","),
+		v1alpha1.ReleaseTTLAnnotation:       "1h",
+		v1alpha1.WebuiGroupAnnotation:       fmt.Sprintf("%s/%s", formatHost(host), image),
+	}
+
+	return &v1alpha1.Blob{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        blobName(host, image, digest),
+			Annotations: annotations,
+		},
+		Spec: v1alpha1.BlobSpec{
+			MaximumRetry:     3,
+			MaximumRunning:   c.maximumRunning,
+			MaximumPending:   1,
+			MinimumChunkSize: c.minimumChunkSize,
+			Priority:         priority,
+			Source: []v1alpha1.BlobSource{
+				{
+					URL:        sourceURL,
+					BearerName: bearerName(host, image),
+				},
+			},
+			Destination: []v1alpha1.BlobDestination{
+				{
+					Name:         c.destination,
+					Path:         cachePath,
+					SkipIfExists: true,
+				},
+			},
+			ForceAcceptRanges: forceAcceptRanges,
+			ContentSha256:     registry.CleanDigest(digest),
+		},
 	}
 }
 
