@@ -51,15 +51,13 @@ func (emptyBlobInformer) Lister() listers.BlobLister {
 
 func TestBlobCreatesObject(t *testing.T) {
 	tests := []struct {
-		host              string
-		forceAcceptRanges bool
-		priority          int64
-		want              *v1alpha1.Blob
+		host     string
+		priority int64
+		want     *v1alpha1.Blob
 	}{
 		{
-			host:              "ollama.com",
-			forceAcceptRanges: true,
-			priority:          2,
+			host:     "ollama.com",
+			priority: 2,
 			want: &v1alpha1.Blob{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "ollama.com:library:alpine:" + testDigest,
@@ -131,12 +129,84 @@ func TestBlobCreatesObject(t *testing.T) {
 				maximumRunning:   5,
 				minimumChunkSize: 256 << 20,
 			}
-			err := c.Blob(context.Background(), tt.host, testImage, testDigest, tt.forceAcceptRanges, tt.priority)
+			err := c.Blob(context.Background(), tt.host, testImage, testDigest, tt.priority)
 			if !errors.Is(err, errCreateCaptured) {
 				t.Fatalf("Blob() error = %v, want %v", err, errCreateCaptured)
 			}
 			if !reflect.DeepEqual(client.created, tt.want) {
 				t.Errorf("Blob() created\n%+v\nwant\n%+v", client.created, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewBlob(t *testing.T) {
+	type transfer struct {
+		ChunksNumber      int64
+		MaximumRunning    int64
+		MinimumChunkSize  int64
+		ForceAcceptRanges bool
+	}
+	var (
+		defaultTransfer = transfer{MaximumRunning: 5, MinimumChunkSize: 256 << 20}
+		forceRange      = transfer{MaximumRunning: 5, MinimumChunkSize: 256 << 20, ForceAcceptRanges: true}
+		singleRequest   = transfer{ChunksNumber: 1, MaximumRunning: 1}
+	)
+	tests := []struct {
+		host  string
+		group string
+		want  transfer
+	}{
+		{host: "public.ecr.aws", group: "public.ecr.aws/library/alpine", want: singleRequest},
+		{host: "ollama.com", group: "ollama.com/library/alpine", want: forceRange},
+		{host: "registry-1.docker.io", group: "docker.io/library/alpine", want: defaultTransfer},
+		{host: "ghcr.io", group: "ghcr.io/library/alpine", want: defaultTransfer},
+		{host: "123456789012.dkr.ecr.us-east-1.amazonaws.com", group: "123456789012.dkr.ecr.us-east-1.amazonaws.com/library/alpine", want: defaultTransfer},
+		{host: "ecr.aws", group: "ecr.aws/library/alpine", want: defaultTransfer},
+		{host: "xpublic.ecr.aws", group: "xpublic.ecr.aws/library/alpine", want: defaultTransfer},
+	}
+	c := &CIDN{destination: "s3", maximumRunning: 5, minimumChunkSize: 256 << 20}
+	for _, tt := range tests {
+		t.Run(tt.host, func(t *testing.T) {
+			blob := c.newBlob(tt.host, testImage, testDigest, 2)
+			spec := blob.Spec
+
+			got := transfer{spec.ChunksNumber, spec.MaximumRunning, spec.MinimumChunkSize, spec.ForceAcceptRanges}
+			if got != tt.want {
+				t.Errorf("transfer = %+v, want %+v", got, tt.want)
+			}
+
+			wantSource := []v1alpha1.BlobSource{{
+				URL:        "https://" + tt.host + "/v2/library/alpine/blobs/" + testDigest,
+				BearerName: tt.host + ":library:alpine",
+			}}
+			if !reflect.DeepEqual(spec.Source, wantSource) {
+				t.Errorf("Source = %+v, want %+v", spec.Source, wantSource)
+			}
+			wantDestination := []v1alpha1.BlobDestination{{Name: "s3", Path: testPath, SkipIfExists: true}}
+			if !reflect.DeepEqual(spec.Destination, wantDestination) {
+				t.Errorf("Destination = %+v, want %+v", spec.Destination, wantDestination)
+			}
+			if spec.ContentSha256 != testSha256 {
+				t.Errorf("ContentSha256 = %q, want %q", spec.ContentSha256, testSha256)
+			}
+			if spec.MaximumRetry != 3 {
+				t.Errorf("MaximumRetry = %d, want 3", spec.MaximumRetry)
+			}
+			if spec.MaximumPending != 1 {
+				t.Errorf("MaximumPending = %d, want 1", spec.MaximumPending)
+			}
+			if spec.Priority != 2 {
+				t.Errorf("Priority = %d, want 2", spec.Priority)
+			}
+			wantAnnotations := map[string]string{
+				v1alpha1.WebuiDisplayNameAnnotation: testDigest,
+				v1alpha1.WebuiTagAnnotation:         "blob,P2",
+				v1alpha1.ReleaseTTLAnnotation:       "1h",
+				v1alpha1.WebuiGroupAnnotation:       tt.group,
+			}
+			if !reflect.DeepEqual(blob.Annotations, wantAnnotations) {
+				t.Errorf("Annotations = %v, want %v", blob.Annotations, wantAnnotations)
 			}
 		})
 	}

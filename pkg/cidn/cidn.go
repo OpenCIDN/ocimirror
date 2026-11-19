@@ -95,7 +95,7 @@ type Response struct {
 	Headers    map[string]string
 }
 
-func (c *CIDN) Blob(ctx context.Context, host, image, digest string, forceAcceptRanges bool, priority int64) error {
+func (c *CIDN) Blob(ctx context.Context, host, image, digest string, priority int64) error {
 	blobName := blobName(host, image, digest)
 	blobs := c.client.TaskV1alpha1().Blobs()
 
@@ -118,7 +118,7 @@ func (c *CIDN) Blob(ctx context.Context, host, image, digest string, forceAccept
 	}
 
 	if create {
-		_, err := blobs.Create(ctx, c.newBlob(host, image, digest, forceAcceptRanges, priority), metav1.CreateOptions{})
+		_, err := blobs.Create(ctx, c.newBlob(host, image, digest, priority), metav1.CreateOptions{})
 		if err != nil && !apierrors.IsAlreadyExists(err) {
 			return err
 		}
@@ -139,7 +139,7 @@ func (c *CIDN) Blob(ctx context.Context, host, image, digest string, forceAccept
 	}
 }
 
-func (c *CIDN) newBlob(host, image, digest string, forceAcceptRanges bool, priority int64) *v1alpha1.Blob {
+func (c *CIDN) newBlob(host, image, digest string, priority int64) *v1alpha1.Blob {
 	sourceURL := fmt.Sprintf("https://%s/v2/%s/blobs/%s", host, image, digest)
 	cachePath := registry.BlobCachePath(digest)
 
@@ -154,7 +154,7 @@ func (c *CIDN) newBlob(host, image, digest string, forceAcceptRanges bool, prior
 		v1alpha1.WebuiGroupAnnotation:       fmt.Sprintf("%s/%s", formatHost(host), image),
 	}
 
-	return &v1alpha1.Blob{
+	blob := &v1alpha1.Blob{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        blobName(host, image, digest),
 			Annotations: annotations,
@@ -178,10 +178,20 @@ func (c *CIDN) newBlob(host, image, digest string, forceAcceptRanges bool, prior
 					SkipIfExists: true,
 				},
 			},
-			ForceAcceptRanges: forceAcceptRanges,
-			ContentSha256:     registry.CleanDigest(digest),
+			ContentSha256: registry.CleanDigest(digest),
 		},
 	}
+
+	switch host {
+	case "ollama.com":
+		blob.Spec.ForceAcceptRanges = true
+	case "public.ecr.aws":
+		// Its blob HEAD returns 401 even with a valid token; a single chunk makes CIDN skip that probe.
+		blob.Spec.ChunksNumber = 1
+		blob.Spec.MaximumRunning = 1
+		blob.Spec.MinimumChunkSize = 0
+	}
+	return blob
 }
 
 func (c *CIDN) ManifestTag(ctx context.Context, host, image, tag string, priority int64) (*Response, error) {

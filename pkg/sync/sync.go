@@ -184,7 +184,7 @@ func syncManifestBlobs(ctx context.Context, g *errgroup.Group, cidnClient *cidn.
 		digest := manifest.Config.Digest // capture variable
 		slog.Info("Processing", "digest", digest, "manifest", manifestDigest)
 		g.Go(func() error {
-			err := cidnClient.Blob(ctx, host, image, digest, false, priority)
+			err := cidnClient.Blob(ctx, host, image, digest, priority)
 			if err != nil {
 				return fmt.Errorf("failed to sync config blob %s: %w", digest, err)
 			}
@@ -198,7 +198,7 @@ func syncManifestBlobs(ctx context.Context, g *errgroup.Group, cidnClient *cidn.
 		digest := layer.Digest
 		slog.Info("Processing", "digest", digest, "manifest", manifestDigest)
 		g.Go(func() error {
-			err := cidnClient.Blob(ctx, host, image, digest, false, priority)
+			err := cidnClient.Blob(ctx, host, image, digest, priority)
 			if err != nil {
 				return fmt.Errorf("failed to sync layer blob %s (index %d): %w", digest, index, err)
 			}
